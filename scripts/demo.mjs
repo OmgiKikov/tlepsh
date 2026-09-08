@@ -24,10 +24,17 @@ import { loadTarget } from "../dist/manifest.js";
 import { startMockModel } from "../dist/mock-model.js";
 import { buildEvalReport } from "../dist/report.js";
 import { saveSpecSnapshot } from "../dist/spec.js";
-import { collectRunDetailPage } from "../dist/evidence/model.js";
+import { collectEvalPage, collectRunDetailPage } from "../dist/evidence/model.js";
 import { renderRunDetailPage } from "../dist/evidence/pages.js";
 import { setLanguage } from "../dist/i18n.js";
 import { compileBuilderPassport } from "../dist/builder/passport-presentation.js";
+import { plainPaint } from "../dist/builder/render/paint.js";
+import { renderRunsTable, renderTracePanel } from "../dist/builder/render/trace.js";
+import { renderUnifiedDiff } from "../dist/builder/render/diff.js";
+import { renderCandidate } from "../dist/builder/render/view.js";
+import { renderExecutiveVersionCard } from "../dist/builder/render/version-card.js";
+import { candidateCases } from "../dist/workbench/candidate-cases.js";
+import { candidateSummary } from "../dist/workbench/resolution.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const step = (title) => console.log(`\n\x1b[1m=== ${title} ===\x1b[0m`);
@@ -51,6 +58,10 @@ const capabilities = {
 	isolation: "tool-free-executor",
 };
 const hash = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+console.log("Free demo: local scripted models and demo-host confirmations.");
+console.log("Not an unscripted model evaluation or actual interactive operator input.");
+console.log("Printed TUI panels provide inspectable output, not full GUI verification; command hints belong to the interactive app.");
 
 const mock = await startMockModel([
 	{
@@ -130,6 +141,10 @@ try {
 	const evidenceRefs = [...new Set(selectedEvidence.diagnoses.flatMap((item) => item.evidence))];
 	console.log(`baseline ${baseline.evalRunId}: ${baseline.summary.pass}/${baseline.summary.total} passed`);
 	console.log(`diagnosis ${diagnosis.diagnosisId}: ${brief.summary.failureModeCount} failure mode(s)`);
+	const baselinePage = collectEvalPage(runsRoot, baseline.evalRunId);
+	console.log(renderRunsTable(baselinePage.rows, baselinePage.modes, plainPaint).join("\n"));
+	if (baselinePage.selectedRun?.run.outcome !== "fail") throw new Error("Baseline has no failed trace to inspect");
+	console.log(renderTracePanel(baselinePage.selectedRun, plainPaint).join("\n"));
 
 	step("2. Builder proposal (repository is still untouched)");
 	const proposal = {
@@ -197,8 +212,11 @@ try {
 		runId: "builder-demo",
 	});
 	console.log(`proposal: ${builder.proposalPath}`);
+	for (const change of builder.record.result.proposal.changes) {
+		console.log(renderUnifiedDiff(change.unifiedDiff, plainPaint).join("\n"));
+	}
 
-	step("3. Explicit human apply");
+	step("3. Explicit apply (demo-host confirmation)");
 	const applied = applyBuilderProposal({
 		repoDir: targetDir,
 		runsRoot,
@@ -232,10 +250,12 @@ try {
 		approvedSpec: { stateRoot, specId: spec.id },
 		sealedCorpus: { stateRoot, projectId: "demo", corpusId: sealed.id },
 	});
-	console.log(`development: ${experiment.compare.gate.verdict} (${experiment.compare.gate.reasons[0]})`);
-	console.log(`sealed: ${experiment.sealedHoldout.compare.gate.verdict} (${experiment.sealedHoldout.compare.gate.reasons[0]})`);
+	const evaluated = experiment.record.events.find((event) => event.type === "evaluated");
+	const cases = candidateCases(runsRoot, evaluated.evaluation.development);
+	if (!cases.cases?.length) throw new Error("Candidate development case evidence is unavailable");
+	console.log(renderCandidate({ ...candidateSummary(experiment.record), ...cases }, plainPaint).join("\n"));
 
-	step("5. Human review, promotion, and report");
+	step("5. Review, promotion, and report (demo-host confirmations)");
 	reviewCandidate({
 		runsRoot,
 		candidateId: experiment.record.candidateId,
@@ -281,7 +301,7 @@ try {
 	const ragReportPath = join(targetDir, "exports", "rag-xray.html");
 	writeFileSync(ragReportPath, renderRunDetailPage(rag));
 	console.log(`RAG X-ray: ${ragReportPath} (Hit@k ${rag.explanation.rag.hitAtK}, MRR ${rag.explanation.rag.mrr})`);
-	console.log(`version card: ${releaseArtifacts.card.decision.headline}`);
+	console.log(renderExecutiveVersionCard(releaseArtifacts.card, plainPaint).join("\n"));
 	if (!releaseArtifacts.reportWritten) throw new Error("shareable release report was not saved");
 	console.log(`shareable report: ${releaseArtifacts.reportWritten}`);
 	console.log(`passport: ${releaseArtifacts.written}`);
@@ -321,7 +341,7 @@ try {
 		reason: "Start the next improvement cycle from the adopted Target.",
 	});
 	console.log(`cycle closed: ${continuation.disposition} · active Target ${continuation.subject.activeTargetSha.slice(0, 12)}`);
-	console.log(`\n\x1b[32mComplete: proposal → approval → evidence → sealed gate → human promotion → adoption → next cycle.\x1b[0m`);
+	console.log(`\n\x1b[32mComplete: proposal → approval → evidence → sealed gate → demo-host promotion → adoption → next cycle.\x1b[0m`);
 	console.log(`Evidence kept at: ${root}`);
 } finally {
 	delete process.env.AHDE_DEMO_KEY;

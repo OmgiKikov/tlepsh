@@ -20,9 +20,12 @@ import { WorkbenchStaleDecisionError } from "../errors.js";
 import { diagnosisSummary, requireApprovedSpec, evaluationProjection, requireCorpusDraft, requireDevelopmentCorpus } from "../resolution.js";
 import { calibrationProjection } from "../calibration.js";
 import { runResultLine } from "../../application/measurement-line.js";
-import { actorId, exactSame, boundedEvidenceLink, conversationalImprovementBrief } from "../workbench.js";
+import { exactSame, boundedEvidenceLink, conversationalImprovementBrief } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult, WorkbenchRunEvalResult, WorkbenchTracesDetail } from "../types.js";
+import { compileImprovementBrief } from "../../application/improvement-brief.js";
+import { diagnoseEvalRun } from "../../diagnosis.js";
+import { basketReadingOf } from "../basket.js";
 
 /**
  * What one eval says about the judge that graded it: how far that judge has
@@ -140,12 +143,16 @@ export async function decideRunEval(
 		...(options.signal ? { signal: options.signal } : {}),
 	});
 	options.signal?.throwIfAborted();
-	const diagnosis = host.dependencies.diagnoseEval(host.runsRoot, record.evalRunId);
-	const improvementBrief = host.dependencies.compileImprovementBrief(host.runsRoot, diagnosis);
+	const diagnosis = diagnoseEvalRun(host.runsRoot, record.evalRunId);
+	const improvementBrief = compileImprovementBrief(host.runsRoot, diagnosis);
 	const link = boundedEvidenceLink(await host.dependencies.evidenceLink(record));
 	const settled = host.select("eval-run", record.evalRunId);
-	const projection = evaluationProjection(record, inventory.corpora, loadVerifiedEvalRun(host.runsRoot, record.evalRunId).runs);
+	const verified = loadVerifiedEvalRun(host.runsRoot, record.evalRunId);
+	const projection = evaluationProjection(record, inventory.corpora, verified.runs);
 	const brief = conversationalImprovementBrief(improvementBrief);
+	// The basket read against the inventory that ran it; the published corpus
+	// has not moved between the confirmation and here.
+	const basket = basketReadingOf(host, inventory, record, verified.runs, brief);
 	// The one sentence about this run, composed once by the host, so the panel,
 	// the status bar and the sentence the Builder quotes are the same string.
 	const headline = runResultLine({
@@ -156,7 +163,7 @@ export async function decideRunEval(
 	// Read after the run and before the view: the offer marker this may write is
 	// exactly what the view's `next` block then reports as a standing offer.
 	const judge = judgeReadingOfEval(host, record.evalRunId);
-	return { kind: input.kind, message: improvementBrief.headline, result: { headline, evaluation: projection, diagnosis: diagnosisSummary(diagnosis), improvementBrief: brief, evidence: link ? { available: true, ...link } : { available: false }, ...judge }, view: await host.viewOf(settled) };
+	return { kind: input.kind, message: improvementBrief.headline, result: { headline, evaluation: projection, diagnosis: diagnosisSummary(diagnosis), improvementBrief: brief, evidence: link ? { available: true, ...link } : { available: false }, ...judge, ...(basket ? { basket } : {}) }, view: await host.viewOf(settled) };
 }
 
 export async function decideCalibrate(
@@ -168,6 +175,19 @@ export async function decideCalibrate(
 	if (!inventory.target) throw new Error("Target is not ready");
 	const approved = requireApprovedSpec(inventory);
 	const corpus = requireDevelopmentCorpus(inventory, undefined, approved.id);
+	// A second user model is an instrument this Target may not have. Refused
+	// here, before the confirmation, because there is nothing to ask about.
+	const alternate = input.simulator === "alternate"
+		? inventory.target.manifest.evalSuite.simulatedUserAlternate
+		: undefined;
+	if (input.simulator === "alternate" && !alternate) {
+		throw new Error(
+			"simulator noise needs a second user model, and this Target declares none: " +
+			"configure evalSuite.simulatedUserAlternate in the Target manifest.",
+		);
+	}
+	// One spelling of that model for the subject, the question and the message.
+	const alternateName = alternate ? `${alternate.provider}/${alternate.id}` : null;
 	const build = (): {
 		subject: Record<string, unknown>;
 		targetGitSha: string;
@@ -187,6 +207,13 @@ export async function decideCalibrate(
 			loaded.metadata.visibility !== "development" ||
 			loaded.metadata.hash !== receipt.corpus.hash
 		) throw new Error("development corpus does not match its reviewed Spec lineage");
+		// A user model has nothing to do in a basket without conversations, and
+		// the band it produced would be zero by construction.
+		if (alternate && !loaded.tasks.some((task) => task.simulatedUser !== undefined)) {
+			throw new Error(
+				"simulator noise needs at least one simulated-user case, and this development corpus has none.",
+			);
+		}
 		return {
 			subject: {
 				operation: "calibrate-noise",
@@ -198,6 +225,9 @@ export async function decideCalibrate(
 				},
 				repetitions: input.repetitions,
 				executions: 2 * loaded.metadata.taskCount * input.repetitions,
+				// What the second arm will measure with, in the subject the human
+				// approves: the same string the panel later prints.
+				...(alternateName ? { simulator: { alternate: alternateName } } : {}),
 			},
 			targetGitSha: target.gitSha,
 			approvedSpecId: currentApproved.id,
@@ -205,8 +235,11 @@ export async function decideCalibrate(
 		};
 	};
 	const before = build();
+	const runs = localizedCount(Number(before.subject.executions), "execution");
 	const actor = await host.confirm(input, gate, t("confirm.title.calibrate"), before.subject, options.signal, {
-		question: t("confirm.calibrate", { runs: localizedCount(Number(before.subject.executions), "execution") }),
+		question: alternateName
+			? t("confirm.calibrate.simulator", { model: alternateName, runs })
+			: t("confirm.calibrate", { runs }),
 		estimate: host.runEstimate(Number(before.subject.executions), inventory.target),
 	});
 	const after = build();
@@ -222,18 +255,27 @@ export async function decideCalibrate(
 		repetitions: input.repetitions,
 		projectId: host.projectId,
 		specId: after.approvedSpecId,
-		origin: { kind: "manual", reason: "A/A calibration" },
+		origin: { kind: "manual", reason: alternate ? "A/A simulator noise" : "A/A calibration" },
 		...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
+		// The second arm plays the user with the other model; everything else —
+		// revision, cases, judge — stays the baseline's, so the band is the
+		// simulator's own noise and nothing else's.
+		...(alternate ? { simulatorNoise: { model: alternate } } : {}),
 		actorId: actor,
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.signal ? { signal: options.signal } : {}),
 	});
 	options.signal?.throwIfAborted();
-	const calibration = calibrationProjection(result.record);
+	const calibration = calibrationProjection(result.record, host.runsRoot, alternate ?? null);
 	if (!calibration) throw new Error("calibration produced no development verdict; nothing was measured");
 	return {
 		kind: input.kind,
-		message: `Noise measured on this revision: A/A ${calibration.verdict}; ` +
+		// What the band is about comes first: a simulator-noise band says nothing
+		// about the agent, and a reader who skips the rest must still know that.
+		message: (alternateName
+			? "Simulator noise on this revision: the second arm played the user with " +
+				`${calibration.simulator?.model ?? alternateName}; A/A ${calibration.verdict}; `
+			: `Noise measured on this revision: A/A ${calibration.verdict}; `) +
 			`${calibration.recommendedRepetitions} repetition${calibration.recommendedRepetitions === 1 ? "" : "s"} recommended.`,
 		result: { candidateId: result.record.candidateId, calibration },
 		view: await host.view(),

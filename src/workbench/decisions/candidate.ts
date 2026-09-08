@@ -9,7 +9,7 @@ import { SEALED_GATE_POLICY, sealedOutcome, sealedOutcomeLine } from "../../doma
 import { type CheapCheckResult } from "../../application/cheap-check.js";
 import { loadBuilderApplyReceipt } from "../../application/builder-proposal.js";
 import { listCorpora, loadCorpus, type CorpusMetadata, type CorpusRef } from "../../corpus.js";
-import { candidateStatus } from "../../domain/candidate.js";
+import { candidateStatus, type CandidateRecord } from "../../domain/candidate.js";
 import { hashValue } from "../../provenance.js";
 import { recordCandidateAbandonment } from "../candidate-abandonment.js";
 import { WorkbenchDecisionDeclinedError, WorkbenchStaleDecisionError, WorkbenchTypedRefusalError } from "../errors.js";
@@ -20,16 +20,35 @@ import {
 	improvementDesignCorpusRefs,
 	loadImprovementExperimentDesign,
 } from "../../application/improvement-experiment-design.js";
-import { isAutomatedDevelopmentCandidate } from "../inventory.js";
+import { isDevelopmentCheckCandidate } from "../inventory.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
+
+/** Whether a check measured exactly the pair and corpus this exam is about, with evidence the exam can cite. */
+function citableCheck(
+	check: CandidateRecord,
+	receipt: { baseTargetSha: string; candidateSha: string },
+	corpus: { id: string; hash: string },
+): boolean {
+	const evaluated = check.events.find((event) => event.type === "evaluated");
+	if (evaluated?.type !== "evaluated") return false;
+	const { development } = evaluated.evaluation;
+	return development.baseline.harness.sha === receipt.baseTargetSha &&
+		development.candidate.harness.sha === receipt.candidateSha &&
+		development.corpus?.id === corpus.id &&
+		development.corpus.hash === corpus.hash &&
+		development.comparison !== null && development.comparison !== undefined &&
+		"comparisonHash" in development.comparison;
+}
 
 export async function decideVerifyCandidate(
 	host: DecisionHost,
 	input: DecisionInputOf<"verify-candidate">,
 	ctx: DecisionContext,
 ): Promise<WorkbenchDecisionResult> {
-	const { inventory, stage, gate, options } = ctx;
+	const { inventory, gate, options } = ctx;
+	// A plain check measures the development basket; `ship` asks for the exam.
+	const exam = input.exam === true;
 	const interrupted = inventory.candidates.find((candidate) =>
 		["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
 		!inventory.abandonedCandidates.has(candidate.candidateId)
@@ -41,9 +60,18 @@ export async function decideVerifyCandidate(
 		);
 	}
 	const proposal = requireProposal(inventory, "applied", input.builderRunId);
+	if (proposal.appliedVia === "first-build") {
+		throw new Error(
+			`proposal ${proposal.record.runId} was the agent's first build and is already the active Target; ` +
+			"there is no candidate to verify — write the cases and run them (run-current) instead",
+		);
+	}
+	// The check of the same proposal, when one exists: a blind hypothesis binds
+	// its validation split here, and the exam cites the check's development
+	// pair. A plain check re-measures; it never cites an earlier one.
 	const sourceExperiments = inventory.candidates.filter((candidate) =>
 		candidate.projectId === host.projectId &&
-		isAutomatedDevelopmentCandidate(candidate) &&
+		isDevelopmentCheckCandidate(candidate) &&
 		candidate.origin.kind === "applied-builder" &&
 		candidate.origin.builderRunId === proposal.record.runId
 	);
@@ -51,7 +79,7 @@ export async function decideVerifyCandidate(
 		items: sourceExperiments,
 		focusId: inventory.validFocus.candidate?.id,
 		id: (candidate) => candidate.candidateId,
-		label: "automated hypothesis",
+		label: "checked change",
 	});
 	const sourceExperimentHash = sourceExperiment ? hashValue(sourceExperiment) : null;
 	const blindDesign = sourceExperiment?.origin.kind === "applied-builder" && sourceExperiment.origin.experimentDesign
@@ -73,45 +101,52 @@ export async function decideVerifyCandidate(
 			);
 		}
 	}
-	let sealed: CorpusMetadata[];
-	try {
-		sealed = listCorpora({ stateRoot: host.stateRoot, projectId: host.projectId }).filter((corpus) => corpus.visibility === "sealed");
-	} catch {
-		throw new Error("evaluator-owned sealed holdout inventory is unavailable; identities remain hidden");
-	}
-	if (sealed.length === 0) {
-		// Minted twice: the English sentence is what the model reads and what
-		// scripts match on; the code is what the operator reads, in their own
-		// language, whole — this refusal used to reach them as `sealed hol…`.
-		throw new WorkbenchTypedRefusalError(
-			"Candidate verification requires an evaluator-owned sealed holdout corpus. Get one first: request generate-holdout " +
-			"(the Target's judge writes it from the Spec; the operator's /holdout does the same) or import a sealed JSONL; then verify again.",
-			{ code: "blocker.sealed-exam-missing" },
-		);
-	}
-	const choice = await gate.selectSealed({ title: "Select evaluator-only sealed holdout", options: sealed.map((corpus, index) => ({ label: `Holdout ${index + 1} · ${corpus.name}`, taskCount: corpus.taskCount })) }, options.signal);
-	options.signal?.throwIfAborted();
-	if (!choice.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
-	if (choice.selectedIndex === undefined || !sealed[choice.selectedIndex]) throw new Error("human gate returned an invalid sealed holdout selection");
-	const selected = sealed[choice.selectedIndex]!;
-	if (selected.taskCount < SEALED_GATE_POLICY.minTasks) {
-		throw new WorkbenchTypedRefusalError(
-			`The selected sealed holdout has ${selected.taskCount} task${selected.taskCount === 1 ? "" : "s"}; ` +
-			`a sealed verdict needs at least ${SEALED_GATE_POLICY.minTasks}. Add holdout cases before verifying.`,
-			{
-				code: "refusal.sealed-exam-too-small",
-				params: {
-					tasks: localizedCount(selected.taskCount, "case"),
-					minimum: SEALED_GATE_POLICY.minTasks,
+	// The exam: an evaluator-owned sealed holdout the human picks, big enough
+	// for a verdict. A plain check never opens one.
+	let selected: CorpusMetadata | null = null;
+	let selectionActorId: string | undefined;
+	if (exam) {
+		let sealed: CorpusMetadata[];
+		try {
+			sealed = listCorpora({ stateRoot: host.stateRoot, projectId: host.projectId }).filter((corpus) => corpus.visibility === "sealed");
+		} catch {
+			throw new Error("evaluator-owned sealed holdout inventory is unavailable; identities remain hidden");
+		}
+		if (sealed.length === 0) {
+			// Minted twice: the English sentence is what the model reads and what
+			// scripts match on; the code is what the operator reads, in their own
+			// language, whole — this refusal used to reach them as `sealed hol…`.
+			throw new WorkbenchTypedRefusalError(
+				"Candidate verification requires an evaluator-owned sealed holdout corpus. Get one first: request generate-holdout " +
+				"(the Target's judge writes it from the Spec; the operator's /holdout does the same) or import a sealed JSONL; then verify again.",
+				{ code: "blocker.sealed-exam-missing" },
+			);
+		}
+		const choice = await gate.selectSealed({ title: "Select evaluator-only sealed holdout", options: sealed.map((corpus, index) => ({ label: `Holdout ${index + 1} · ${corpus.name}`, taskCount: corpus.taskCount })) }, options.signal);
+		options.signal?.throwIfAborted();
+		if (!choice.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
+		if (choice.selectedIndex === undefined || !sealed[choice.selectedIndex]) throw new Error("human gate returned an invalid sealed holdout selection");
+		selected = sealed[choice.selectedIndex]!;
+		selectionActorId = choice.actorId;
+		if (selected.taskCount < SEALED_GATE_POLICY.minTasks) {
+			throw new WorkbenchTypedRefusalError(
+				`The selected sealed holdout has ${selected.taskCount} task${selected.taskCount === 1 ? "" : "s"}; ` +
+				`a sealed verdict needs at least ${SEALED_GATE_POLICY.minTasks}. Add holdout cases before verifying.`,
+				{
+					code: "refusal.sealed-exam-too-small",
+					params: {
+						tasks: localizedCount(selected.taskCount, "case"),
+						minimum: SEALED_GATE_POLICY.minTasks,
+					},
 				},
-			},
-		);
-	}
-	if (input.repetitions < SEALED_GATE_POLICY.minRepetitions) {
-		throw new WorkbenchTypedRefusalError(
-			`Candidate verification needs at least ${SEALED_GATE_POLICY.minRepetitions} repetitions for a sealed verdict.`,
-			{ code: "refusal.repetitions-too-few", params: { minimum: SEALED_GATE_POLICY.minRepetitions } },
-		);
+			);
+		}
+		if (input.repetitions < SEALED_GATE_POLICY.minRepetitions) {
+			throw new WorkbenchTypedRefusalError(
+				`Candidate verification needs at least ${SEALED_GATE_POLICY.minRepetitions} repetitions for a sealed verdict.`,
+				{ code: "refusal.repetitions-too-few", params: { minimum: SEALED_GATE_POLICY.minRepetitions } },
+			);
+		}
 	}
 	const build = () => {
 		const current = host.decisionInventory(input.kind);
@@ -124,19 +159,23 @@ export async function decideVerifyCandidate(
 		const builderRun = currentProposal.record;
 		if (sourceExperiment) {
 			const currentExperiment = requireCandidate(current, ["evaluated"], sourceExperiment.candidateId);
-			if (!isAutomatedDevelopmentCandidate(currentExperiment) || hashValue(currentExperiment) !== sourceExperimentHash) {
+			if (!isDevelopmentCheckCandidate(currentExperiment) || hashValue(currentExperiment) !== sourceExperimentHash) {
 				throw new WorkbenchStaleDecisionError(input.kind);
 			}
 		}
 		const applyReceipt = loadBuilderApplyReceipt(host.runsRoot, proposal.record.runId);
 		if (builderRun.request.approvedSpec?.projectId !== host.projectId) throw new Error("Builder proposal is not bound to this project approved Spec");
-		let sealedLoaded: ReturnType<typeof loadCorpus>;
-		try {
-			sealedLoaded = loadCorpus({ stateRoot: host.stateRoot, projectId: host.projectId, corpusId: selected.id });
-		} catch {
-			throw new Error("selected evaluator-owned holdout is unavailable or changed; identity remains hidden");
+		let sealedCorpus: CorpusRef | undefined;
+		if (selected) {
+			let sealedLoaded: ReturnType<typeof loadCorpus>;
+			try {
+				sealedLoaded = loadCorpus({ stateRoot: host.stateRoot, projectId: host.projectId, corpusId: selected.id });
+			} catch {
+				throw new Error("selected evaluator-owned holdout is unavailable or changed; identity remains hidden");
+			}
+			if (sealedLoaded.metadata.visibility !== "sealed" || sealedLoaded.metadata.hash !== selected.hash) throw new Error("sealed holdout changed");
+			sealedCorpus = { stateRoot: host.stateRoot, projectId: host.projectId, corpusId: selected.id };
 		}
-		if (sealedLoaded.metadata.visibility !== "sealed" || sealedLoaded.metadata.hash !== selected.hash) throw new Error("sealed holdout changed");
 		// The development arm is the published development corpus of the Spec
 		// this proposal was written against — the operator's own cases, resolved
 		// exactly the way `run-eval` resolves them. It is never the manifest
@@ -202,9 +241,15 @@ export async function decideVerifyCandidate(
 			hash: measured.metadata.hash,
 			taskCount: measured.metadata.taskCount,
 		};
+		// The exam cites the check's development pair when the check measured
+		// exactly this pair on exactly this basket: the operator then ships the
+		// numbers they read, and pays for the exam alone.
+		const cited = exam && sourceExperiment && sourceExperimentHash && !blindDesign && citableCheck(sourceExperiment, applyReceipt, development)
+			? { candidateId: sourceExperiment.candidateId, expectedHash: sourceExperimentHash }
+			: undefined;
 		return {
 			subject: {
-				operation: "verify-applied-candidate",
+				operation: exam ? "verify-applied-candidate" : "check-applied-candidate",
 				builderRunId: builderRun.runId,
 				builderRunHash: hashValue(builderRun),
 				applyReceiptHash: hashValue(applyReceipt),
@@ -216,7 +261,8 @@ export async function decideVerifyCandidate(
 				blindDesign: blindDesign
 					? { id: blindDesign.designId, hash: blindDesign.designHash, sourceCandidateHash: sourceExperimentHash }
 					: null,
-				sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount },
+				citedCheck: cited ? { candidateId: cited.candidateId, hash: cited.expectedHash } : null,
+				sealedHoldout: selected ? { id: selected.id, hash: selected.hash, taskCount: selected.taskCount } : null,
 				repetitions: input.repetitions,
 				screen: builderRun.request.source?.evalRunId ?? null,
 				force: input.force === true,
@@ -230,21 +276,31 @@ export async function decideVerifyCandidate(
 			developmentCorpus,
 			validationCorpus,
 			experimentDesignPath,
-			sealedCorpus: { stateRoot: host.stateRoot, projectId: host.projectId, corpusId: selected.id } satisfies CorpusRef,
+			sealedCorpus,
+			cited,
 		};
 	};
 	const before = build();
-	// Two arms over the development basket and the sealed holdout.
+	// The arms that will actually run: the development basket unless the check
+	// is cited, and the sealed holdout when this is the exam.
 	const developmentTasks = before.subject.developmentCorpus.taskCount;
-	const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
-	const actor = await host.confirm(input, gate, t("confirm.title.verify-candidate"), before.subject, options.signal, {
-		question: before.sourceEvalRunId
-			? t("confirm.verify-candidate.screened", { runs: localizedCount(executions + developmentTasks, "execution") })
-			: t("confirm.verify-candidate", { runs: localizedCount(executions, "execution") }),
-		estimate: host.runEstimate(executions + (before.sourceEvalRunId ? developmentTasks : 0), inventory.target),
+	const developmentExecutions = before.cited ? 0 : 2 * developmentTasks * input.repetitions;
+	const examExecutions = selected ? 2 * selected.taskCount * input.repetitions : 0;
+	const executions = developmentExecutions + examExecutions;
+	// The cheap screen runs before a development measurement is paid for; a
+	// cited check already measured that arm in full.
+	const screening = before.sourceEvalRunId !== null && !before.cited;
+	const screenExecutions = screening ? developmentTasks : 0;
+	const actor = await host.confirm(input, gate, t(exam ? "confirm.title.exam-candidate" : "confirm.title.verify-candidate"), before.subject, options.signal, {
+		question: exam
+			? t("confirm.exam-candidate", { runs: localizedCount(executions + screenExecutions, "execution") })
+			: screening
+				? t("confirm.verify-candidate.screened", { runs: localizedCount(executions + screenExecutions, "execution") })
+				: t("confirm.verify-candidate", { runs: localizedCount(executions, "execution") }),
+		estimate: host.runEstimate(executions + screenExecutions, inventory.target),
 		authorized: before.authorized,
 	});
-	if (choice.actorId && actorId(choice.actorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
+	if (selectionActorId && actorId(selectionActorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
 	const after = build();
 	if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 
@@ -255,7 +311,7 @@ export async function decideVerifyCandidate(
 	// infrastructure errors blew the budget is inconclusive and stops
 	// nothing (invariant 9).
 	let screen: CheapCheckResult | null = null;
-	if (after.sourceEvalRunId) {
+	if (screening && after.sourceEvalRunId) {
 		try {
 			screen = await host.dependencies.runCheapCheck({
 				repositoryDir: host.projectDir,
@@ -309,7 +365,8 @@ export async function decideVerifyCandidate(
 			developmentCorpus: after.developmentCorpus,
 			...(after.validationCorpus ? { validationCorpus: after.validationCorpus } : {}),
 			...(after.experimentDesignPath ? { experimentDesignPath: after.experimentDesignPath } : {}),
-			sealedCorpus: after.sealedCorpus,
+			...(after.sealedCorpus ? { sealedCorpus: after.sealedCorpus } : {}),
+			...(after.cited ? { developmentEvidenceFrom: after.cited } : {}),
 			actorId: actor,
 			...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 			...(options.signal ? { signal: options.signal } : {}),
@@ -347,7 +404,9 @@ export async function decideVerifyCandidate(
 		confidence95: result.sealedHoldout?.compare.summary.confidence95 ?? null,
 	};
 	const outcomeLine = sealedOutcomeLine(sealedDecided);
-	const summary = candidateSummary(result.record);
+	const summary = host.candidateView(result.record, settled.developmentEvals);
+	const developmentVerdict = result.compare.gate.verdict;
+	const brokenGuards = summary.development?.regressionGuards?.broken.length ?? 0;
 	return {
 		kind: input.kind,
 		message: sealedVerdict === "pass"
@@ -357,13 +416,20 @@ export async function decideVerifyCandidate(
 					: "The exam proved no regression and no improvement: say both halves, and never call it an improvement."
 			}`
 			: sealedVerdict === null
-				? "Candidate verification completed on development evidence; no sealed holdout ran."
+				? (exam
+					? "Candidate verification completed on development evidence; no sealed holdout ran."
+					: `Check completed on the development basket: ${developmentVerdict}. The sealed exam has not run — ` +
+						(developmentVerdict === "regressed"
+							? "a regressed change cannot ship: fix it, or reject it."
+							: brokenGuards > 0
+								? `${brokenGuards} regression guard(s) broke — cases the base passed every time; it cannot ship until fixed or checked again with more repetitions.`
+								: "“ship it <version>” runs the exam and releases; “reject” drops the change."))
 				: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
 		result: {
 			outcome: "verified",
 			headline: summary.headline,
 			candidate: summary,
-			development: { verdict: result.compare.gate.verdict, scoreDelta: result.compare.summary.scoreDelta, confidence95: result.compare.summary.confidence95 },
+			development: { verdict: developmentVerdict, scoreDelta: result.compare.summary.scoreDelta, confidence95: result.compare.summary.confidence95 },
 			sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
 			screen: screen ? host.screenProjection(screen) : null,
 		},

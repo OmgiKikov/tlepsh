@@ -137,6 +137,22 @@ function gradeOutputContains(
 	};
 }
 
+function gradeOutputExcludes(
+	spec: { text: string; caseSensitive: boolean },
+	output: string | undefined,
+): GraderResult {
+	const haystack = spec.caseSensitive ? (output ?? "") : (output ?? "").toLowerCase();
+	const needle = spec.caseSensitive ? spec.text : spec.text.toLowerCase();
+	const passed = !haystack.includes(needle);
+	return {
+		name: "",
+		type: "output_excludes",
+		passed,
+		score: passed ? 1 : 0,
+		reason: passed ? `output does not contain "${spec.text}"` : `output contains "${spec.text}", which it must not`,
+	};
+}
+
 function gradeOutputMatches(spec: { pattern: string }, output: string | undefined): GraderResult {
 	const regex = new RegExp(spec.pattern);
 	const passed = output !== undefined && regex.test(output);
@@ -162,7 +178,7 @@ function missingExpected(type: GraderSpec["type"]): GraderResult {
 }
 
 /** `lower` is trim + lowercase + collapsed whitespace; `trim` only trims. */
-export function normalizeAnswer(text: string, mode: ExactNormalize): string {
+function normalizeAnswer(text: string, mode: ExactNormalize): string {
 	if (mode === "none") return text;
 	const trimmed = text.trim();
 	if (mode === "trim") return trimmed;
@@ -190,7 +206,7 @@ function gradeExact(
 // The tokenizer and the token-F1 score live in `domain/tokens.ts` so the Target
 // runtime's `kb_search` can rank with the same words these graders compare
 // with, without importing this module. Re-exported so every existing caller —
-// `ahde label`, the regrade path, the tests — keeps its import.
+// `/label`, the regrade path, the tests — keeps its import.
 export { answerTokens, tokenF1 };
 
 /** Levenshtein distance over unicode code points, one rolling row of cells. */
@@ -504,7 +520,7 @@ function judgeSubjectField(value: string): string {
  * What this grader put in front of this judge.
  *
  * Pure — trace messages in, subject out — and the ONLY derivation of it. The
- * judge prompt builders below and `ahde label` both call this, so the object a
+ * judge prompt builders below and `/label` both call this, so the object a
  * human is asked to grade is the object the judge graded, down to the byte a
  * hash of it would produce.
  */
@@ -983,6 +999,7 @@ function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
 		case "tool_called": return "required-tool";
 		case "output_contains": return "output-contains";
 		case "output_matches": return "output-matches";
+		case "output_excludes": return "output-excludes";
 		case "no_secret": return "no-secret";
 		case "judge": return "semantic-rubric";
 		case "exact": return "reference-exact";
@@ -1065,6 +1082,8 @@ export async function gradeRun(
 			result = gradeToolCalled(normalizedSpec, toolCalls);
 		} else if (normalizedSpec.type === "output_contains") {
 			result = gradeOutputContains(normalizedSpec, output ?? "");
+		} else if (normalizedSpec.type === "output_excludes") {
+			result = gradeOutputExcludes(normalizedSpec, output ?? "");
 		} else if (normalizedSpec.type === "no_secret") {
 			result = gradeNoSecret(output);
 		} else if (normalizedSpec.type === "turn_budget") {
@@ -1211,7 +1230,7 @@ export async function gradeRun(
 
 // ---------- Eval run aggregation ----------
 
-export const EvalRunSummarySchema = z
+const EvalRunSummarySchema = z
 	.strictObject({
 		total: z.number().int().nonnegative(),
 		pass: z.number().int().nonnegative(),
@@ -1239,7 +1258,7 @@ const EvalRunArtifactSchema = z.strictObject({
 	sha256: HashSchema,
 });
 
-export const EvidenceVisibilitySchema = z.enum(["development", "sealed"]);
+const EvidenceVisibilitySchema = z.enum(["development", "sealed"]);
 export type EvidenceVisibility = z.infer<typeof EvidenceVisibilitySchema>;
 
 /**
@@ -1264,7 +1283,7 @@ export const EVAL_RUN_SCHEMA_VERSION = 3;
  * distinction lives in the record, so a process killed between the EvalRun
  * write and the marker write still leaves a screen that everything refuses.
  */
-export const EvalRunPurposeSchema = z.enum(["evidence", "screen", "model-experiment", "legacy-unknown"]);
+const EvalRunPurposeSchema = z.enum(["evidence", "screen", "legacy-unknown"]);
 export type EvalRunPurpose = z.infer<typeof EvalRunPurposeSchema>;
 
 const EvalRunRecordFields = {
@@ -1293,7 +1312,7 @@ const EvalRunRecordFields = {
 	label: z.enum(["baseline", "candidate", "solo", "regrade"]),
 	/** For candidate runs: the baseline eval run it was compared against. */
 	baselineEvalRunId: ArtifactIdSchema.nullable(),
-	/** Set only by `ahde regrade`: the eval run whose recorded traces were re-scored. */
+	/** Set only by `/regrade`: the eval run whose recorded traces were re-scored. */
 	regradeOf: ArtifactIdSchema.optional(),
 	provenance: ProvenanceAxesSchema,
 	provenanceKey: HashSchema,
@@ -1371,9 +1390,6 @@ function refineEvalRunRecord(record: EvalRunRecordShape, context: z.RefinementCt
 	}
 	// A screen is a one-arm run; the only other label it can wear is `regrade`,
 	// because re-scoring a screen's recorded traces produces a screen.
-	if (record.purpose === "model-experiment" && (record.label !== "solo" && record.label !== "regrade" || record.evidenceVisibility !== "development")) {
-		context.addIssue({ code: "custom", path: ["purpose"], message: "model experiments are development-only solo measurements" });
-	}
 	if (record.purpose === "screen" && record.label !== "solo" && record.label !== "regrade") {
 		context.addIssue({ code: "custom", path: ["purpose"], message: "a screen is a one-arm `solo` run" });
 	}
@@ -1410,7 +1426,7 @@ const LegacyEvalRunRecordSchemaV2 = z.strictObject({
  * quarantined instead of becoming evidence. A v1 index still fails, because
  * its provenance contract genuinely differs.
  */
-export const EvalRunIndexSchema: z.ZodType<EvalRunRecord> = z.union([
+const EvalRunIndexSchema: z.ZodType<EvalRunRecord> = z.union([
 	EvalRunRecordSchema,
 	LegacyEvalRunRecordSchemaV2.transform((record): EvalRunRecord => ({
 		...record,
@@ -1530,7 +1546,7 @@ export interface GradedRunOutcome extends CompletedRun {
  * becomes an error with its cause, and the same single write persists it.
  *
  * This is the only place a RunRecord acquires an outcome. `runSuite` calls it
- * for an execution it just performed and `ahde regrade` calls it for a trace it
+ * for an execution it just performed and `/regrade` calls it for a trace it
  * copied, so both paths score evidence through identical code.
  */
 export async function gradeRecordedRun(
@@ -1833,7 +1849,7 @@ export function writeEvalRun(runsRoot: string, record: EvalRunRecord): void {
 }
 
 /**
- * One row of `ahde list`: identity, label, target, verdict, and — for derived
+ * One row of the eval-run list: identity, label, target, verdict, and — for derived
  * evidence — the eval run it re-scored, because the timestamp on that row is
  * the grading's, not the traces'.
  */

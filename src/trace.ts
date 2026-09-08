@@ -67,11 +67,11 @@ export function redactTraceText(text: string): string {
 			"[REDACTED_PRIVATE_KEY]",
 		)
 		.replace(
-			/((?:api[_-]?key|access[_-]?token|auth[_-]?token|github[_-]?token|aws[_-]?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key)|private[_-]?key|secret|password|token|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:key|token|secret|password))["']?\s*[:=]\s*["'])[^\r\n"']+(["'])/gi,
+			/((?:api[_-]?key|access[_-]?token|auth[_-]?token|github[_-]?token|aws[_-]?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key)|private[_-]?key|secret|password|token|\b(?:pin|passcode|otp|cvv|cvc)\b|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:key|token|secret|password|pin|passcode|otp|cvv|cvc))["']?\s*[:=]\s*["'])[^\r\n"']+(["'])/gi,
 			"$1[REDACTED]$2",
 		)
 		.replace(
-			/((?:api[_-]?key|access[_-]?token|auth[_-]?token|github[_-]?token|aws[_-]?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key)|private[_-]?key|secret|password|token|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:key|token|secret|password))["']?\s*[:=]\s*)(?!["'])[^,\s;}\]]+/gi,
+			/((?:api[_-]?key|access[_-]?token|auth[_-]?token|github[_-]?token|aws[_-]?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key)|private[_-]?key|secret|password|token|\b(?:pin|passcode|otp|cvv|cvc)\b|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:key|token|secret|password|pin|passcode|otp|cvv|cvc))["']?\s*[:=]\s*)(?!["']|\[REDACTED(?:_[A-Z_]+)?\](?:$|[,\s;}\]]))[^,\s;}\]]+/gi,
 			"$1[REDACTED]",
 		)
 		.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")

@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+import { hyperlink as nativeHyperlink } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -35,6 +37,40 @@ export const plainPaint: Paint = {
 	link: identity,
 };
 
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/u;
+
+/**
+ * The address a link text can be opened at, or null: an http(s) URL
+ * as itself, an absolute path to a file the host wrote as `file://`. Anything
+ * else is a word painted like a link and left alone.
+ */
+export function linkTarget(text: string): string | null {
+	if (CONTROLS.test(text)) return null;
+	const trimmed = text.trim();
+	if (/^\/.*\.(?:html|md|jsonl|json|txt)$/u.test(trimmed)) return pathToFileURL(trimmed).href;
+	if (!/^(?:https?|file):\/\/\S+$/u.test(trimmed)) return null;
+	try {
+		const url = new URL(trimmed);
+		if ((url.protocol === "http:" || url.protocol === "https:") && url.hostname) return trimmed;
+		if (url.protocol === "file:" && !url.host && !url.search && !url.hash) return trimmed;
+	} catch {
+		// A label is not necessarily an address.
+	}
+	return null;
+}
+
+/**
+ * An OSC 8 hyperlink around already-styled text, so a terminal that follows
+ * links (iTerm2, Terminal.app, VS Code, kitty, WezTerm) opens the Explorer on
+ * a click instead of asking the operator to copy an address out of a panel.
+ * pi-tui measures, wraps and re-opens OSC 8 correctly; a terminal that does
+ * not know it shows the text and ignores the sequence.
+ */
+export function hyperlink(styled: string, target: string): string {
+	const safe = linkTarget(target);
+	return safe ? nativeHyperlink(styled, safe) : styled;
+}
+
 /** Bind renderers to the live Pi theme (header, widgets, tool cards, panels). */
 export function themePaint(theme: Pick<Theme, "fg" | "bold">): Paint {
 	return {
@@ -48,6 +84,10 @@ export function themePaint(theme: Pick<Theme, "fg" | "bold">): Paint {
 		error: (text) => theme.fg("error", text),
 		added: (text) => theme.fg("toolDiffAdded", text),
 		removed: (text) => theme.fg("toolDiffRemoved", text),
-		link: (text) => theme.fg("mdLinkUrl", text),
+		link: (text) => {
+			const styled = theme.fg("mdLinkUrl", text);
+			const target = linkTarget(text);
+			return target ? hyperlink(styled, target) : styled;
+		},
 	};
 }

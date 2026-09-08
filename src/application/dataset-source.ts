@@ -8,7 +8,7 @@ import {
 	realpathSync,
 	type Stats,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { BUILDER_CORPUS_IMPORT_ROOT } from "./builder-corpus-import-contract.js";
 import { readBoundedBytes, sameFileSnapshot } from "../storage/artifacts.js";
@@ -90,6 +90,8 @@ export interface ReadDatasetSourceOptions {
 	sourcePath: string;
 	/** Roots the inbox must never reach into, such as private AHDE state. */
 	protectedRoots?: readonly string[];
+	/** A caller with a smaller contract (the JSONL importer) caps the read below the inbox bound. */
+	maxBytes?: number;
 }
 
 function resolveSource(options: ReadDatasetSourceOptions): { absolute: string; relative: string; expected: Stats } {
@@ -137,10 +139,12 @@ function resolveSource(options: ReadDatasetSourceOptions): { absolute: string; r
 	return { absolute: canonicalSource, relative: sourcePath, expected: sourceEntry };
 }
 
-function readBounded(path: string, expected: Stats): Buffer {
+function readBounded(path: string, expected: Stats, maxBytes: number): Buffer {
 	let descriptor: number;
 	try {
-		descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+		// O_NONBLOCK: a FIFO substituted between lstat and open must not hang
+		// the read; fstat still verifies the opened descriptor before any byte.
+		descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 	} catch (error) {
 		throw new Error("dataset source could not be opened safely", { cause: error });
 	}
@@ -148,12 +152,12 @@ function readBounded(path: string, expected: Stats): Buffer {
 		const before = fstatSync(descriptor);
 		if (!before.isFile()) throw new Error("dataset source must be a regular file");
 		if (!sameFileSnapshot(expected, before)) throw new Error("dataset source changed before it was read");
-		if (before.size > MAX_DATASET_SOURCE_BYTES) {
-			throw new Error(`dataset source exceeds ${MAX_DATASET_SOURCE_BYTES} bytes`);
+		if (before.size > maxBytes) {
+			throw new Error(`dataset source exceeds ${maxBytes} bytes`);
 		}
 
-		const bytes = readBoundedBytes(descriptor, MAX_DATASET_SOURCE_BYTES);
-		if (bytes === null) throw new Error(`dataset source exceeds ${MAX_DATASET_SOURCE_BYTES} bytes`);
+		const bytes = readBoundedBytes(descriptor, maxBytes);
+		if (bytes === null) throw new Error(`dataset source exceeds ${maxBytes} bytes`);
 		const after = fstatSync(descriptor);
 		if (!sameFileSnapshot(before, after)) throw new Error("dataset source changed while it was being read");
 		if (bytes.length === 0) throw new Error("dataset source is empty");
@@ -166,7 +170,7 @@ function readBounded(path: string, expected: Stats): Buffer {
 /** Read one bounded inbox file from a stable inode and hash exactly those bytes. */
 export function readDatasetSource(options: ReadDatasetSourceOptions): DatasetSourceFile {
 	const source = resolveSource(options);
-	const bytes = readBounded(source.absolute, source.expected);
+	const bytes = readBounded(source.absolute, source.expected, options.maxBytes ?? MAX_DATASET_SOURCE_BYTES);
 	const text = decodeUtf8(bytes, (cause) => new Error("dataset source is not valid UTF-8", { cause }));
 	const extension = extensionOf(source.relative);
 	if (!extension) throw new Error("dataset source has no recognized extension");

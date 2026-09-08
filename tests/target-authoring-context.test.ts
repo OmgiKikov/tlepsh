@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	cpSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -12,19 +14,23 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	classifyTargetAuthoringResourcePath,
 	explainTargetAuthoringResourcePath,
 	inspectTargetAuthoringContext,
 	TargetAuthoringContextError,
+	TARGET_AUTHORING_LIMITS,
 	type TargetAuthoringContextErrorCode,
 } from "../src/application/target-authoring-context.js";
 import { createAhdeWorkbench } from "../src/workbench/workbench.js";
 import { loadTarget } from "../src/manifest.js";
+import { createBuilderWorkbenchTools } from "../src/builder/workbench-adapter.js";
+import { WorkbenchSubmitToolSchema, WorkbenchViewToolSchema } from "../src/builder/workbench-transport.js";
+import { loadBuilderCorpusDraft } from "../src/application/builder-corpus-draft.js";
 
 const roots: string[] = [];
-const CONTAINER_DIGEST = "a".repeat(64);
 const AGENTS = "# Context Agent\n\nUse the declared search capability.\n";
 const SKILL = "---\nname: search\ndescription: Search approved local evidence.\n---\n\n# Search\n\nCall the declared tool.\n";
 const TOOL = `schemaVersion: 1
@@ -144,6 +150,7 @@ function sha256(value: string): string {
 }
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -206,39 +213,18 @@ describe("Target Authoring Context", () => {
 		]) expect(serialized).not.toContain(privateValue);
 	});
 
-	it("projects and hashes the complete non-secret pinned container policy", () => {
-		const withContainer = manifest().replace(
-			"  sandbox: best-effort\n",
-			`  sandbox: required
-  container:
-    runtime: docker
-    image: ahde/context@sha256:${CONTAINER_DIGEST}
-    platform: linux/amd64
-    memoryMb: 1536
-    cpus: 1.25
-    pidsLimit: 96
-    readOnlyRootfs: true
-`,
-		);
-		const fixture = commitFixture({ manifest: withContainer });
+	it("projects and hashes the complete non-secret execution policy", () => {
+		const strict = manifest().replace("  sandbox: best-effort\n", "  sandbox: required\n");
+		const fixture = commitFixture({ manifest: strict });
 		const overview = inspect(fixture.repositoryDir, fixture.gitSha);
 		expect(overview.target.execution).toEqual({
 			tools: ["read"],
 			environmentAllowlist: ["SEARCH_INDEX"],
 			network: "deny",
 			sandbox: "required",
-			container: {
-				runtime: "docker",
-				image: `ahde/context@sha256:${CONTAINER_DIGEST}`,
-				platform: "linux/amd64",
-				memoryMb: 1536,
-				cpus: 1.25,
-				pidsLimit: 96,
-				readOnlyRootfs: true,
-			},
 		});
 
-		const changed = commitFixture({ manifest: withContainer.replace("memoryMb: 1536", "memoryMb: 2048") });
+		const changed = commitFixture({ manifest: strict.replace("  network: deny\n", "  network: allow\n") });
 		expect(inspect(changed.repositoryDir, changed.gitSha).contextHash).not.toBe(overview.contextHash);
 	});
 
@@ -409,7 +395,7 @@ describe("a Target that declares its own harness surface", () => {
 		// A declared file is named by its own path: the surface is declared by
 		// glob, so the path is the only name it has.
 		expect(overview.resources.find((resource) => resource.kind === "harness-file")?.name).toBe("prompts/system.md");
-		// Declared data stays shape-only, exactly as for a Pi Target.
+		// The overview stays shape-only; a selected KB read is not a writable resource.
 		expect(overview.data.map((directory) => directory.path)).toEqual(["data/kb"]);
 
 		const exact = inspectTargetAuthoringContext({
@@ -436,7 +422,6 @@ describe("a Target that declares its own harness surface", () => {
 			"README.md",
 			"manifest.yaml",
 			"evals/development.jsonl",
-			"data/kb/tariffs.md",
 			"prompts/../agent.py",
 		]) expectCode(read(path), "TARGET_RESOURCE_DENIED");
 	});
@@ -454,6 +439,228 @@ describe("a Target that declares its own harness surface", () => {
 			}),
 			"TARGET_RESOURCE_TOO_LARGE",
 		);
+	});
+});
+
+describe("read-only KB context for an open development basket", () => {
+	const document = "# Refund policy\n\nThe refund window is 30 days.\n";
+	const path = "data/kb/public/policy.md";
+	function fixture(content: string | Buffer = document, declarations = "[data/kb/public]") {
+		return commitFixture({
+			manifest: `${manifest()}data: ${declarations}\n`,
+			beforeCommit(repositoryDir) {
+				for (const [name, bytes] of [
+					[path, content],
+					["data/kb/public/guide.txt", "Use the published policy.\n"],
+					["data/kb/private/hidden.md", "PRIVATE-KB-SENTINEL\n"],
+					["data/fixtures/world.md", "PRIVATE-WORLD-SENTINEL\n"],
+				] as const) {
+					mkdirSync(join(repositoryDir, name, ".."), { recursive: true });
+					writeFileSync(join(repositoryDir, name), bytes);
+				}
+			},
+		});
+	}
+
+	it("reads complete exact Git text/hash while keeping the overview and writable closure unchanged", () => {
+		const { repositoryDir, gitSha } = fixture();
+		const overview = inspect(repositoryDir, gitSha);
+		const selected = inspect(repositoryDir, gitSha, path);
+		expect(selected.resource).toEqual({
+			kind: "knowledge", readOnly: true, name: null, path, mode: "100644",
+			content: document, bytes: Buffer.byteLength(document), sha256: sha256(document),
+		});
+		expect(overview.resource).toBeUndefined();
+		expect(JSON.stringify(overview)).not.toContain("The refund window");
+		expect(selected.resources).toEqual(overview.resources);
+		expect(selected.resources.some((resource) => resource.path.startsWith("data/"))).toBe(false);
+		expect(selected.claim).toEqual(overview.claim);
+		// The same classifier is used by compilation; a read cannot mint write authority.
+		expect(classifyTargetAuthoringResourcePath(path, ["**"])).toBeNull();
+		expect(inspect(repositoryDir, gitSha, "data/kb/public/guide.txt").resource?.content).toContain("published policy");
+		expect(git(repositoryDir, "status", "--porcelain=v1")).toBe("");
+		expect(git(repositoryDir, "rev-parse", "HEAD")).toBe(gitSha);
+		expect(readFileSync(join(repositoryDir, path), "utf8")).toBe(document);
+		for (const hidden of ["PRIVATE-KB-SENTINEL", "PRIVATE-WORLD-SENTINEL", "never-expose", "DO NOT EXPOSE"]) {
+			expect(JSON.stringify(selected)).not.toContain(hidden);
+		}
+	});
+
+	it("denies sibling KB, general data, hidden/eval paths and traversal even beneath a declaration", () => {
+		const { repositoryDir, gitSha } = fixture();
+		for (const denied of [
+			"data/kb/private/hidden.md", "data/fixtures/world.md", ".env", "data/kb/public/.env",
+			"evals/development.jsonl", "data/kb/public/evals/cases.md", "data/kb/public/imports/trace.txt",
+			"data/kb/public/runs/state.md", "data/kb/public/.ahde/case.md", "data/kb/public/.hidden/note.md",
+			"data/kb/public/manual.pdf", "data/kb/public/config.json", "data/kb/public",
+			"../data/kb/public/policy.md", "data/kb/public/../private/hidden.md", "data/kb/public//policy.md",
+			"data/kb/public/./policy.md", "data/kb/public/%2e%2e/policy.md", "data\\kb\\public\\policy.md",
+			"data/kb/public/policy.md\0", "/etc/passwd",
+		]) expectCode(() => inspect(repositoryDir, gitSha, denied), "TARGET_RESOURCE_DENIED");
+		// A data/kbx or data/fixtures declaration does not activate KB reading.
+		const notKb = fixture(document, "[data/fixtures]");
+		expectCode(() => inspect(notKb.repositoryDir, notKb.gitSha, path), "TARGET_RESOURCE_DENIED");
+	});
+
+	it.each(["dataset", "graders"])("denies a manifest's %s file even if placed inside the declared KB", (field) => {
+		const source = fixture();
+		const yaml = readFileSync(join(source.repositoryDir, "manifest.yaml"), "utf8")
+			.replace(new RegExp(`  ${field}: [^\\n]+`), `  ${field}: ./data/kb/public/extra/../policy.md`);
+		writeFileSync(join(source.repositoryDir, "manifest.yaml"), yaml);
+		git(source.repositoryDir, "add", "manifest.yaml");
+		git(source.repositoryDir, "commit", "-qm", "move evaluation declaration into KB");
+		expectCode(() => inspect(source.repositoryDir, git(source.repositoryDir, "rev-parse", "HEAD"), path), "TARGET_RESOURCE_DENIED");
+	});
+
+	it("rejects dirty or stale KB reads and reads commit bytes rather than ignored worktree replacements", () => {
+		const source = fixture();
+		writeFileSync(join(source.repositoryDir, path), "uncommitted replacement\n");
+		expectCode(() => inspect(source.repositoryDir, source.gitSha, path), "TARGET_CONTEXT_DIRTY");
+		git(source.repositoryDir, "add", path);
+		git(source.repositoryDir, "commit", "-qm", "updated KB");
+		expectCode(() => inspect(source.repositoryDir, source.gitSha, path), "TARGET_CONTEXT_STALE");
+		const revision = git(source.repositoryDir, "rev-parse", "HEAD");
+		// Even a worktree change hidden from status cannot change the bytes read.
+		git(source.repositoryDir, "update-index", "--assume-unchanged", path);
+		writeFileSync(join(source.repositoryDir, path), "not the committed document\n");
+		expect(inspect(source.repositoryDir, revision, path).resource?.content).toBe("uncommitted replacement\n");
+	});
+
+	it.each(["file", "ancestor"])("rejects a KB Git symlink at the %s without following it", (kind) => {
+		const source = fixture();
+		const linked = "data/kb/public/link";
+		symlinkSync(kind === "file" ? "../../private/hidden.md" : "../private", join(source.repositoryDir, kind === "file" ? `${linked}.md` : linked));
+		git(source.repositoryDir, "add", ".");
+		git(source.repositoryDir, "commit", "-qm", "KB symlink");
+		expectCode(() => inspect(source.repositoryDir, git(source.repositoryDir, "rev-parse", "HEAD"),
+			kind === "file" ? `${linked}.md` : `${linked}/hidden.md`), "TARGET_RESOURCE_SYMLINK");
+	});
+
+	it("refuses oversized, invalid UTF-8 and executable KB files without truncation", () => {
+		const exact = fixture(`${"x".repeat(1023)}\n`.repeat(TARGET_AUTHORING_LIMITS.knowledgeBytes / 1024));
+		expect(inspect(exact.repositoryDir, exact.gitSha, path).resource?.bytes).toBe(TARGET_AUTHORING_LIMITS.knowledgeBytes);
+		const huge = fixture(Buffer.alloc(TARGET_AUTHORING_LIMITS.knowledgeBytes + 1, 0x61));
+		expectCode(() => inspect(huge.repositoryDir, huge.gitSha, path), "TARGET_RESOURCE_TOO_LARGE");
+		const longLine = fixture("x".repeat(TARGET_AUTHORING_LIMITS.knowledgeLineChars + 1));
+		expectCode(() => inspect(longLine.repositoryDir, longLine.gitSha, path), "TARGET_RESOURCE_TOO_LARGE");
+		const invalid = fixture(Buffer.from([0xc3, 0x28]));
+		expectCode(() => inspect(invalid.repositoryDir, invalid.gitSha, path), "TARGET_RESOURCE_INVALID_UTF8");
+		chmodSync(join(exact.repositoryDir, path), 0o755);
+		git(exact.repositoryDir, "add", path);
+		git(exact.repositoryDir, "commit", "-qm", "executable KB");
+		expectCode(() => inspect(exact.repositoryDir, git(exact.repositoryDir, "rev-parse", "HEAD"), path), "TARGET_CONTEXT_INVALID");
+	});
+
+	it.each([
+		"token=private-value-never-return\n", "Bearer abcdef0123456789abcdef\n",
+		"-----BEGIN PRIVATE KEY-----\nprivate-value-never-return\n-----END PRIVATE KEY-----\n",
+		"A leaked host credential: opaque-host-credential.\n", "\u001b]52;c;c2VjcmV0\u0007\n",
+	])("refuses credential/control-bearing KB text before it crosses into a tool result", (content) => {
+		vi.stubEnv("PRIVATE_MODEL_KEY", "opaque-host-credential");
+		const source = fixture(content);
+		expectCode(() => inspect(source.repositoryDir, source.gitSha, path), "TARGET_RESOURCE_DENIED");
+	});
+
+	it.each([
+		{ role: "tool", name: "SEARCH_INDEX", value: "r8L4z2Q9m5V7x1C6" },
+		{ role: "execution", name: "KB_EXECUTION_ONLY", value: "n3F6w9D2s7J4b8P5" },
+		{ role: "model", name: "PRIVATE_MODEL_KEY", value: "h5T1y8A3c6R9v2M7" },
+	])("refuses bare opaque $role environment values in an actual KB read without exposing the value", ({ name, value }) => {
+		vi.stubEnv("SEARCH_INDEX", "r8L4z2Q9m5V7x1C6");
+		vi.stubEnv("KB_EXECUTION_ONLY", "n3F6w9D2s7J4b8P5");
+		vi.stubEnv("PRIVATE_MODEL_KEY", "h5T1y8A3c6R9v2M7");
+		// An ambient variable that was not declared must not enter the scan.
+		vi.stubEnv("KB_UNDECLARED_HOST_VALUE", document);
+		const content = `A bare value: ${value}\n`;
+		const source = commitFixture({
+			manifest: `${manifest().replace("environmentAllowlist: [SEARCH_INDEX]", "environmentAllowlist: [SEARCH_INDEX, KB_EXECUTION_ONLY]")}data: [data/kb/public]\n`,
+			beforeCommit(repositoryDir) {
+				mkdirSync(join(repositoryDir, "data/kb/public"), { recursive: true });
+				writeFileSync(join(repositoryDir, path), content);
+				writeFileSync(join(repositoryDir, "data/kb/public/benign.md"), document);
+			},
+		});
+		// SEARCH_INDEX is a tool dependency permitted by execution, not a model key.
+		expect(process.env[name]).toBe(value);
+		let refused: unknown;
+		try {
+			inspect(source.repositoryDir, source.gitSha, path);
+		} catch (error) {
+			refused = error;
+		}
+		expect(refused).toBeInstanceOf(TargetAuthoringContextError);
+		expect(refused).toMatchObject({
+			code: "TARGET_RESOURCE_DENIED",
+			message: "KB text contains credential-shaped content or terminal controls; it cannot enter authoring context.",
+		});
+		expect(`${String(refused)} ${JSON.stringify(refused)} ${(refused as Error).stack}`).not.toContain(value);
+		expect(readFileSync(join(source.repositoryDir, path), "utf8")).toBe(content);
+		const benign = inspect(source.repositoryDir, source.gitSha, "data/kb/public/benign.md");
+		expect(benign.resource).toMatchObject({ content: document, sha256: sha256(document), bytes: Buffer.byteLength(document) });
+		expect(JSON.stringify(benign)).not.toContain(value);
+	});
+
+	it("delivers the source through registered Builder tools and saves an explicit open draft without running or publishing", async () => {
+		const { repositoryDir, gitSha } = fixture();
+		const stateRoot = root("ahde-kb-draft-state-");
+		const runsRoot = root("ahde-kb-draft-runs-");
+		const runSuite = vi.fn(() => { throw new Error("authoring must not execute the Target"); });
+		const workbench = createAhdeWorkbench({ projectDir: repositoryDir, stateRoot, runsRoot, projectId: "context-agent", dependencies: { runSuite } });
+		const spec = await workbench.submit({
+			kind: "spec-draft",
+			spec: {
+				schemaVersion: 1, title: "Policy assistant", purpose: "Answer from the declared KB",
+				users: ["customers"], jobs: ["Explain refund policy"], inputs: ["Questions"],
+				allowedActions: ["Read KB"], successCriteria: ["State the published refund window"],
+				constraints: ["Do not invent policy"], openQuestions: ["Exceptions are not documented"],
+			},
+		});
+		await workbench.decide({ kind: "approve-spec", draftSpecId: String(spec.artifact?.id), reason: "Approve fixture requirements" }, {
+			confirm: async () => ({ approved: true, actorId: "local:test" }),
+			selectSealed: async () => ({ approved: false }),
+		});
+		const tools = createBuilderWorkbenchTools(workbench, () => "local:test");
+		const view = tools.find((tool) => tool.name === "ahde_workbench_view")!;
+		const submit = tools.find((tool) => tool.name === "ahde_workbench_submit")!;
+		const host = {} as ExtensionContext;
+		const overview = await view.execute("index", { aspect: "target" }, undefined, undefined, host);
+		const index = overview.content[0];
+		if (index?.type !== "text") throw new Error("expected model-facing JSON");
+		const directory = JSON.parse(index.text).detail.content.data[0];
+		expect(directory.entries).toContain("policy.md");
+		expect(index.text).not.toContain("The refund window");
+		const result = await view.execute("kb", WorkbenchViewToolSchema.prepare({ aspect: "target", resourcePath: path }), undefined, undefined, host);
+		const text = result.content[0];
+		if (text?.type !== "text") throw new Error("expected model-facing JSON");
+		const context = JSON.parse(text.text).detail.content;
+		expect(context.resource).toMatchObject({ kind: "knowledge", readOnly: true, path, content: document, sha256: sha256(document) });
+		expect(context.target.gitSha).toBe(gitSha);
+		for (const hidden of [repositoryDir, "PRIVATE-KB-SENTINEL", "PRIVATE-WORLD-SENTINEL", "never-expose", "DO NOT EXPOSE"]) {
+			expect(text.text).not.toContain(hidden);
+		}
+		const expected = /window is ([^.]+)/.exec(context.resource.content)?.[1];
+		expect(expected).toBe("30 days");
+		const source = `${path}@${gitSha} ${context.resource.sha256}`;
+		const authored = await submit.execute("draft", WorkbenchSubmitToolSchema.prepare({
+			kind: "corpus-draft", name: "KB-sourced development cases",
+			tasks: [{ input: "What is the refund window?", expected,
+				metadata: { source, rationale: "Read the published refund window; author claim, not verified grounding" },
+				graders: [{ type: "exact" }] }],
+			coverageNotes: ["Synthetic question from a declared source", "Exceptions remain unresolved; no scored exception case"],
+			revisionSummary: "Draft from committed KB text",
+		}), undefined, undefined, host);
+		const saved = authored.content[0];
+		if (saved?.type !== "text") throw new Error("expected draft tool result");
+		const draftId = JSON.parse(saved.text).artifact.id;
+		const draft = loadBuilderCorpusDraft(stateRoot, "context-agent", draftId);
+		expect(draft.tasks[0]?.expected).toBe(expected);
+		expect(draft.tasks[0]?.metadata?.source).toBe(source);
+		expect(draft.coverageNotes).toContain("Exceptions remain unresolved; no scored exception case");
+		expect((await workbench.view()).counts).toMatchObject({ corpusDrafts: 1, developmentCorpora: 0, sealedCorpora: 0, developmentEvals: 0 });
+		expect(runSuite).not.toHaveBeenCalled();
+		expect(git(repositoryDir, "status", "--porcelain=v1")).toBe("");
+		expect(git(repositoryDir, "rev-parse", "HEAD")).toBe(gitSha);
+		expect(existsSync(join(repositoryDir, "data/kb/public/new.md"))).toBe(false);
 	});
 });
 

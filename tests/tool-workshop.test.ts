@@ -18,12 +18,10 @@ import { inspectTargetAuthoringContext } from "../src/application/target-authori
 import {
 	describeFixtureRun,
 	readToolFixtures,
-	readTryToolInput,
 	runToolFixtures,
 	tryTool,
 } from "../src/application/tool-workshop.js";
 import { parseToolFixtureFile } from "../src/application/tool-authoring.js";
-import { parseCliInvocation } from "../src/cli-invocation.js";
 import { loadTarget } from "../src/manifest.js";
 import {
 	computeTargetWorkspaceHash,
@@ -690,41 +688,6 @@ printf '{"token":"ghp_%s"}\\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 		await expect(tryTool({ repositoryDir: dir, tool: "missing_tool", input: {} }))
 			.rejects.toThrow(/declares no tool named missing_tool; declared: lookup/);
-	});
-
-	it("parses the operator command and rejects malformed forms", () => {
-		const parsed = parseCliInvocation([
-			"tool", "try", "--target", "/tmp/agent", "--tool", "lookup", "--input", '{"term":"x"}', "--branch", "eg/x",
-		]);
-		expect(parsed).toMatchObject({
-			kind: "command",
-			command: "tool",
-			action: "try",
-			flags: { target: "/tmp/agent", tool: "lookup", input: '{"term":"x"}', branch: "eg/x" },
-		});
-
-		expect(() => parseCliInvocation(["tool"])).toThrow(/missing action for tool; expected try/);
-		expect(() => parseCliInvocation(["tool", "run", "--target", "/tmp/a"])).toThrow(/unknown action "run" for tool/);
-		expect(() => parseCliInvocation(["tool", "try", "--target", "/tmp/a", "--tool", "lookup"]))
-			.toThrow(/tool try requires exactly one of --input <json\|@path> or --fixtures/);
-		expect(() => parseCliInvocation(["tool", "try", "--target", "/tmp/a", "--tool", "lookup", "--input", "{}", "--fixtures"]))
-			.toThrow(/tool try requires exactly one of --input <json\|@path> or --fixtures/);
-		expect(parseCliInvocation(["tool", "try", "--target", "/tmp/agent", "--tool", "lookup", "--fixtures"])).toMatchObject({
-			command: "tool",
-			action: "try",
-			flags: { target: "/tmp/agent", tool: "lookup", fixtures: "true" },
-		});
-		expect(() => parseCliInvocation(["tool", "try", "--target", "/tmp/a", "--tool", "lookup", "--input", "{}", "--project", "p"]))
-			.toThrow(/unknown flag --project for tool/);
-	});
-
-	it("reads --input as inline JSON or @path and rejects anything else", () => {
-		expect(readTryToolInput('{"term":"x"}')).toEqual({ term: "x" });
-		const dir = makeTargetFixture([{ path: "input.json", content: '{"term":"from-file"}' }], false);
-		created.push(dir);
-		expect(readTryToolInput(`@${join(dir, "input.json")}`)).toEqual({ term: "from-file" });
-		expect(() => readTryToolInput("not json")).toThrow(/tool input must be JSON/);
-		expect(() => readTryToolInput(`@${join(dir, "missing.json")}`)).toThrow();
 	});
 });
 

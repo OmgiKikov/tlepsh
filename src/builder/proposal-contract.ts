@@ -79,7 +79,8 @@ export type ProposalPredictedMode = z.infer<typeof PredictedModeSchema>;
  */
 export const ProposalPredictionSchema = z
 	.strictObject({
-		modes: z.array(PredictedModeSchema).max(MAX_PREDICTED_MODES),
+		// Optional on the way in: a construction close names no mode, and live session 10 was refused once for omitting the empty list.
+		modes: z.array(PredictedModeSchema).max(MAX_PREDICTED_MODES).default([]),
 		/** Expected pass-rate movement of the whole basket, in percentage points. */
 		expectedPassRateDeltaPp: DeltaPointsSchema.nullable().default(null),
 		/** Expected movement of the mean paired grader score the gate decides on. */

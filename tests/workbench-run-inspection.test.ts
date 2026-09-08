@@ -2,7 +2,6 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { targetWithSealedCorpus } from "../src/application/corpus-target.js";
-import { decisionReplayUrl } from "../src/builder/decision-presentation.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { MAX_RUN_INSPECTION_LINES, renderRunInspection } from "../src/builder/render/run-inspection.js";
 import { WorkbenchViewToolSchema } from "../src/builder/workbench-transport.js";
@@ -113,11 +112,4 @@ it("redacts tools and checks, omits reasoning, and declares both model and termi
 	const lines = renderRunInspection(inspected, plainPaint);
 	expect(lines).toHaveLength(MAX_RUN_INSPECTION_LINES);
 	expect(lines.at(-1)).toContain("omitted");
-});
-
-it("links completed verification to replay on the existing loopback host and never links an unmeasured screen", () => {
-	const verified = { kind: "verify-candidate", result: { outcome: "verified", candidate: { candidateId: "candidate-1" } } } as WorkbenchDecisionResult;
-	expect(decisionReplayUrl(verified, "http://127.0.0.1:4123/live/scope")).toBe("http://127.0.0.1:4123/candidates/candidate-1/replay");
-	for (const url of [undefined, "https://remote.invalid/live", "http://user:secret@localhost/live"]) expect(decisionReplayUrl(verified, url)).toBeNull();
-	expect(decisionReplayUrl({ kind: "verify-candidate", result: { outcome: "stopped-by-screen" } } as WorkbenchDecisionResult, "http://localhost:4123/live/scope")).toBeNull();
 });

@@ -50,8 +50,9 @@ const LEGAL_DECISION_STAGES = {
 	"start-testing": ["spec-review", "corpus-review"],
 	"run-eval": ["ready-to-evaluate", "improvement-authoring"],
 	calibrate: ["ready-to-evaluate", "improvement-authoring"],
-	"model-experiment": ["ready-to-evaluate", "improvement-authoring"],
-	"accept-model": ["ready-to-evaluate", "improvement-authoring"],
+	// The critic reads a draft where it is reviewed, and the published basket
+	// wherever a run can read it: that is where a failing case gets doubted.
+	"critique-corpus": ["corpus-review", "ready-to-evaluate", "improvement-authoring"],
 	// A re-score belongs wherever a recorded evaluation and a revised rubric can
 	// both exist. `corpus-review` is the important one: revising the graders is
 	// what puts a draft there, and re-scoring before publishing is the whole
@@ -73,8 +74,9 @@ const LEGAL_DECISION_STAGES = {
 	"review-candidate": ["candidate-review"],
 	"promote-candidate": ["release-decision"],
 	// The persona tells the model to reject right where the evidence is read, and
-	// `/reject` already works there; `decide` records the review first.
-	"reject-candidate": ["candidate-review", "release-decision"],
+	// `/reject` already works there; `decide` records the review first. A check
+	// is read at `candidate-verification`, so a checked change is rejected there.
+	"reject-candidate": ["candidate-verification", "candidate-review", "release-decision"],
 	"adopt-candidate": ["candidate-adoption"],
 	"continue-cycle": ["complete"],
 	// The composite that closes a verified candidate: review, promote, adopt,
@@ -95,7 +97,7 @@ export const UNBLOCKING_ACTION: Record<WorkbenchStage, string> = {
 	"ready-to-evaluate": "say “tests” to run the basket",
 	"improvement-authoring": "look at the failures, then say “fix it”",
 	"proposal-review": "review the diff, then say “apply” or “discard”",
-	"candidate-verification": "say “check” to verify the candidate",
+	"candidate-verification": "say “check” to measure the change on the basket, then “ship it” for the exam",
 	"candidate-review": "read the evidence, then say “ship it”",
 	"release-decision": "say “ship it” or “reject”",
 	"candidate-adoption": "say “ship it” to make the promoted candidate active",
@@ -209,8 +211,6 @@ export const WORKBENCH_GATE_POLICY = {
 	"scaffold-target": "consequential",
 	"wrap-target": "consequential",
 	"configure-target": "consequential",
-	"model-experiment": "consequential",
-	"accept-model": "consequential",
 	// The same class as the Target's own model, for the same reason: it commits
 	// a reviewed change to manifest.yaml and it decides what the evidence is
 	// measured with.
@@ -244,6 +244,8 @@ export const WORKBENCH_GATE_POLICY = {
 	// Measurement too, and the cheapest kind: no Target call at all. The guard
 	// still applies, because re-deciding a judge grader is re-buying the judge.
 	regrade: "routine",
+	// Judge spend on the cases themselves; the same guard as a re-score.
+	"critique-corpus": "routine",
 	"verify-candidate": "routine",
 	// The loop measures, but it also applies exact proposals to throwaway refs.
 	// Its one up-front disclosure is therefore always a real full confirmation,

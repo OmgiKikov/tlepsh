@@ -15,6 +15,7 @@ const CHECK_CATEGORIES: Record<GraderCheckCode, GraderCategory> = {
 	"required-tool": "tool-selection",
 	"output-contains": "output-contract",
 	"output-matches": "output-contract",
+	"output-excludes": "output-contract",
 	"reference-exact": "output-contract",
 	"no-secret": "output-contract",
 	"semantic-rubric": "answer-quality",
@@ -29,6 +30,6 @@ export function categoryForGrader(grader: { type: string; checkCode?: GraderChec
 	const known = grader.checkCode ? CHECK_CATEGORIES[grader.checkCode] : undefined;
 	if (known) return known;
 	if (grader.type === "tool_called") return "tool-selection";
-	if (["output_contains", "output_matches", "exact", "no_secret"].includes(grader.type)) return "output-contract";
+	if (["output_contains", "output_matches", "output_excludes", "exact", "no_secret"].includes(grader.type)) return "output-contract";
 	return "answer-quality";
 }

@@ -36,7 +36,7 @@ import {
 } from "./evidence/pages.js";
 import { writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
-// The optional growth section: the same projection `ahde log` prints.
+// The optional growth section: the same projection `/log` prints.
 import { compileAgentLog, formatResolvedModes, sparkline, type AgentLog } from "./application/agent-log.js";
 import { interval, money, percent, points, ratio } from "./measurement.js";
 
@@ -252,7 +252,7 @@ export interface EvalReportData {
 	judgeAbstained: number;
 	/**
 	 * The agent's growth for this Target — the same bounded projection
-	 * `ahde log` prints. Null when no project is known, because a log is asked
+	 * `/log` prints. Null when no project is known, because a log is asked
 	 * for by project, and null when the candidate evidence cannot be read: a
 	 * missing growth section never costs a report its run evidence.
 	 */
@@ -530,7 +530,7 @@ export function judgeCalibrationRows(
 	/**
 	 * Whether a label store was consulted at all. "Not calibrated" is a claim
 	 * about the judge; a surface that never opened the labels has no business
-	 * making it, and would otherwise contradict `ahde report` on the same run.
+	 * making it, and would otherwise contradict the HTML report on the same run.
 	 */
 	consulted = true,
 ): ReportJudgeCalibration[] {
@@ -1022,7 +1022,7 @@ document.addEventListener('click',ev=>{const target=ev.target;const node=target 
 window.addEventListener('hashchange',()=>{const id=runIdFromHash();if(id)showRun(id,false,false)});
 	const requestedRunId=runIdFromHash();if(!(requestedRunId&&showRun(requestedRunId,false,false))&&DATA.runs.length)showRun(DATA.runs[0].runId,false,false);
 ${RUNS_TABLE_FILTER_SCRIPT}
-// Growth: the same bounded projection \`ahde log\` prints. Promotions in full,
+// Growth: the same bounded projection \`/log\` prints. Promotions in full,
 // rejections dimmed between them, and a sealed cell that is a verdict and a
 // size and nothing else.
 const GROWTH_SPARKLINE=${embeddedJson(data.agentLog ? sparkline(data.agentLog.versions.map((version) => version.score)) : "")};

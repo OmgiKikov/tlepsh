@@ -19,8 +19,8 @@ import { t } from "./i18n.js";
  *  - **Percent** is a whole percent. A pass rate is a count over a count, and
  *    the decimal in `31.5%` is smaller than the noise every A/A run in this
  *    product measures. `{ digits: 1 }` is the one exception, and it is for a
- *    *series*: the growth chart, the passport's before → after and the watch
- *    tick each put two measurements beside each other, where rounding both to
+ *    *series*: the growth chart and the passport's before → after each put two
+ *    measurements beside each other, where rounding both to
  *    the same whole number would claim they are equal. Out-of-range input is
  *    clamped: a rate is a rate, and `140%` on a screen is worth less than the
  *    bug it hides.

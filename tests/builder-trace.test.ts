@@ -196,13 +196,15 @@ describe("traces in the TUI", () => {
 
 	it("renders the runs table failures first, width-bounded, with the failure mode named", () => {
 		const lines = renderRunsTable(rows, page.modes, plainPaint, { limit: 2 }).map(stripMarkers);
-		expect(lines[0]).toMatch(/^#\s+task\s+rep\s+passed\s+outcome\s+score\s+graders\s+failure mode\s+tools\s+latency$/);
-		expect(lines[1]).toContain("task_006");
-		expect(lines[1]).toContain("fail");
-		expect(lines[1]).toContain("✗tool check_dbo");
-		expect(lines[1]).toContain("Required tool check fa");
-		expect(lines[2]).toContain("task_009");
-		expect(lines.some((line) => line.includes("… 1 more rows · /traces 3 shows more"))).toBe(true);
+		expect(lines[0]).toMatch(/^#\s+task\s+rep\s+passed\s+outcome\s+score\s+what failed\s+tools\s+latency$/);
+		// A rule under the header, then the rows: failures first.
+		expect(lines[1]).toMatch(/^[─ ]+$/);
+		expect(lines[2]).toContain("task_006");
+		expect(lines[2]).toContain("✗ fail");
+		// What went wrong is the diagnosed failure mode, not a truncated grader chip.
+		expect(lines[2]).toContain("Required tool check fa");
+		expect(lines[3]).toContain("task_009");
+		expect(lines.some((line) => line.includes("1 more rows · /traces next"))).toBe(true);
 		expect(lines.at(-1)).toContain("/trace 1");
 		for (const line of lines) expect([...line].length).toBeLessThanOrEqual(110);
 	});
@@ -370,7 +372,7 @@ describe("traces in the TUI", () => {
 	});
 
 	it("resolves rows, next/prev from the cursor, task ids and run ids", () => {
-		expect(resolveTraceTarget("", rows, null)).toMatchObject({ index: 0 });
+		 expect(resolveTraceTarget("", rows, null)).toMatchObject({ index: 0 });
 		expect(resolveTraceTarget("next", rows, 0)).toMatchObject({ index: 1 });
 		expect(resolveTraceTarget("next", rows, 2)).toBe("end");
 		expect(resolveTraceTarget("prev", rows, 0)).toBe("end");
@@ -381,6 +383,9 @@ describe("traces in the TUI", () => {
 		expect(resolveTraceTarget("run_pass1", rows, null)).toMatchObject({ index: 2 });
 		expect(() => resolveTraceTarget("9", rows, null)).toThrow(/the table has 3 rows/);
 		expect(() => resolveTraceTarget("nonsense", rows, null)).toThrow(/takes a row number/);
+		const many = Array.from({ length: 1_001 }, (_, index) => ({ ...rows[0]!, runId: `run-${index + 1}` }));
+		expect(resolveTraceTarget("1001", many, null)).toMatchObject({ index: 1000, row: { runId: "run-1001" } });
+		expect(() => resolveTraceTarget("9007199254740992", many, null)).toThrow(/the table has/);
 	});
 
 	it("/trace opens a run as a panel and hands the Builder the facts with a turn", async () => {
@@ -412,6 +417,24 @@ describe("traces in the TUI", () => {
 		await h.command("trace").handler("what", h.ctx);
 		expect(h.blocks.at(-1)?.title).toBe("AHDE · /trace");
 		expect(stripMarkers(h.blocks.at(-1)!.lines.join("\n"))).toMatch(/takes a row number/);
+	});
+
+	it("opens a four-digit absolute row from the selected eval and resets the trace cursor on selection changes", async () => {
+		let evalRunId = "erun-first";
+		const evalPage = vi.fn((_root: string, id: string) => ({ ...page, evalRunId: id, rows: Array.from({ length: 1_001 }, (_, index) => ({
+			...rows[0]!, runId: `${id}-run-${index + 1}`, taskId: `case-${index + 1}`,
+		})) }));
+		const runDetail = vi.fn((_root: string, runId: string) => ({
+			...detail(runId, "selected-case", 0, "fail"), evalRunId,
+		}));
+		const h = harness({ evalPage, runDetail }, async () => ({ detail: { aspect: "traces", content: { evaluation: { evalRunId } } } }));
+		await h.command("trace").handler("1001", h.ctx);
+		expect(runDetail).toHaveBeenLastCalledWith("/tmp/agent/runs", "erun-first-run-1001");
+		evalRunId = "erun-second";
+		await h.command("trace").handler("next", h.ctx);
+		expect(evalPage).toHaveBeenLastCalledWith("/tmp/agent/runs", evalRunId);
+		expect(runDetail).toHaveBeenLastCalledWith("/tmp/agent/runs", "erun-second-run-1");
+		expect(h.notes.at(-1)?.text).toContain("of eval erun-second");
 	});
 
 	it("refuses a run the Explorer refuses, without a note to the Builder", async () => {

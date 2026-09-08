@@ -24,6 +24,19 @@ export function stageLabel(stage: WorkbenchStage): string {
 }
 
 /**
+ * The stage as the operator lives it. The artifacts say “eval design” the
+ * moment a Spec is approved, but while the agent is still the packaged
+ * template the work of that moment is building it, and the header says so.
+ */
+export function buildRequired(view: Pick<WorkbenchView, "stage"> & Partial<Pick<WorkbenchView, "target">>): boolean {
+	return view.target?.built === false && (view.stage === "corpus-design" || view.stage === "ready-to-evaluate");
+}
+
+export function stageLabelOf(view: Pick<WorkbenchView, "stage"> & Partial<Pick<WorkbenchView, "target">>): string {
+	return buildRequired(view) ? t("stage.build") : stageLabel(view.stage);
+}
+
+/**
  * What to say next at one stage, without a whole view to read it from. The
  * Workbench headline is the model's English sentence about the same stage; it
  * is only the fallback for a stage this host does not know.
@@ -51,10 +64,12 @@ function standInBlocker(view: Partial<Pick<WorkbenchView, "blockers" | "blockerR
 
 /** One actionable sentence for the header and status; blockers win over hints. */
 export function nextStep(
-	view: Pick<WorkbenchView, "stage" | "headline" | "blockers" | "detail"> & Partial<Pick<WorkbenchView, "blockerReasons" | "guidance">>,
+	view: Pick<WorkbenchView, "stage" | "headline" | "blockers" | "detail"> & Partial<Pick<WorkbenchView, "blockerReasons" | "guidance" | "target" | "checkedChange">>,
 ): string {
 	if (view.guidance?.operatorNext) return t(view.guidance.operatorNext.code);
 	if (view.stage === "selection-required") return t("next.selection-required");
+	// The change is measured on the basket; what is left is the exam, and ship runs it.
+	if (view.stage === "candidate-verification" && view.checkedChange) return t("next.candidate-checked");
 	if (view.stage === "candidate-verification" && view.detail?.aspect === "review" && view.detail.content.kind === "interrupted-candidate") {
 		return t("next.interrupted");
 	}
@@ -64,5 +79,6 @@ export function nextStep(
 	if (view.stage === "target-setup" && standInBlocker(view)) {
 		return t("next.model-required");
 	}
+	if (buildRequired(view)) return t("next.build-required");
 	return STAGES.includes(view.stage) ? t(`next.${view.stage}`) : view.headline;
 }

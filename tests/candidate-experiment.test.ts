@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, judgeComparison } from "../src/domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, judgeComparison, regressionGuards } from "../src/domain/comparison-gate.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import {
 	runCandidateExperiment,
 	type CandidateExperimentDependencies,
 } from "../src/application/candidate-experiment.js";
-import { type CompareResult } from "../src/compare.js";
+import { type CompareOptions, type CompareResult } from "../src/compare.js";
 import { createCorpus, loadCorpus, type CorpusMetadata, type CorpusRef } from "../src/corpus.js";
 import {
 	targetEvalSurface,
@@ -21,8 +21,7 @@ import {
 } from "../src/application/corpus-target.js";
 import {
 	CandidateRecordSchema,
-	candidateStatus,
-} from "../src/domain/candidate.js";
+	candidateStatus, promotionGradeVerdictOf } from "../src/domain/candidate.js";
 import {
 	type EvalRunRecord,
 	type ReusableBaselineQuery,
@@ -31,7 +30,7 @@ import {
 	loadVerifiedEvalRun,
 	writeEvalRun,
 } from "../src/eval.js";
-import { loadTarget, type ResolvedTarget } from "../src/manifest.js";
+import { SimulatedUserModelBlock, loadTarget, type ResolvedTarget } from "../src/manifest.js";
 import {
 	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
@@ -897,6 +896,8 @@ permissions:
 			result.compare,
 			{ corpusId: corpus.metadata.id, corpusHash: corpus.metadata.hash },
 		));
+		// The regression suite is read off the same rows and travels with them.
+		expect(evaluated.evaluation.development.regressionGuards).toEqual(regressionGuards(result.compare.rows, 2));
 		expect(result.designHash).toBe(hashValue({
 			schemaVersion: 1,
 			baseline: { ref: repository.baselineSha, sha: repository.baselineSha },
@@ -918,6 +919,33 @@ permissions:
 			expect(evidence).not.toContain(corpus.stateRoot);
 		}
 		assertCheckoutUnchanged(repository);
+	});
+
+	it("records every task the base passed each time as a broken guard when the candidate fails them all", async () => {
+		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
+		// A forced delta of -1 scripts the fake comparison as base 100% → candidate 0% on every task.
+		const runtime = fakeRuntime({ comparisonDeltas: [-1] });
+		const result = await runCandidateExperiment(
+			{
+				repositoryDir: repository.dir,
+				runsRoot: repository.runsRoot,
+				baselineRef: repository.baselineSha,
+				candidateRef: repository.candidateSha,
+				mode: "candidate",
+				repetitions: 2,
+				candidateId: "candidate-broken-guards",
+				projectId: "project-1",
+			},
+			runtime.dependencies,
+		);
+		const evaluated = result.record.events.at(-1);
+		if (evaluated?.type !== "evaluated") throw new Error("expected evaluated event");
+		const guards = evaluated.evaluation.development.regressionGuards;
+		expect(guards).toMatchObject({ policy: "regression-guards-v1", guarded: 15 });
+		expect(guards?.broken).toHaveLength(15);
+		expect(guards?.broken).toEqual([...guards!.broken].sort());
+		// The record is evaluated evidence, as a failed gate is; it is promotion that refuses it.
+		expect(promotionGradeVerdictOf(evaluated.evaluation.development.comparison)).toBe("regressed");
 	});
 
 	it("rejects invalid development-corpus combinations before candidate publication", async () => {
@@ -1294,6 +1322,70 @@ permissions:
 		assertCheckoutUnchanged(repository);
 	});
 
+	/**
+	 * The same A/A, with the one deliberate asymmetry the design allows: another
+	 * model plays the user on the second arm, so the band it measures belongs to
+	 * the simulator. It is legal nowhere else — not in a candidate comparison,
+	 * which would be reading the instrument's noise as the agent's improvement,
+	 * and not on a sealed holdout, which measures generalization under the
+	 * instrument the operator actually ships.
+	 */
+	it("plays the second A/A arm with the alternate user model and expects only that axis to move", async () => {
+		const repository = createRepository();
+		const runtime = fakeRuntime();
+		const compareOptions: CompareOptions[] = [];
+		const compareEvalRuns = runtime.dependencies.compareEvalRuns!;
+		const dependencies = {
+			...runtime.dependencies,
+			compareEvalRuns: (runsRoot: string, a: string, b: string, options: CompareOptions) => {
+				compareOptions.push(options);
+				return compareEvalRuns(runsRoot, a, b, options);
+			},
+		};
+		const model = SimulatedUserModelBlock.parse({
+			provider: "qwen-internal",
+			id: "user-alternate",
+			api: "openai-completions",
+			baseUrl: "http://127.0.0.1:9901/v1",
+			apiKeyEnv: "TEST_MODEL_KEY",
+			thinkingLevel: "off",
+			timeoutMs: 300_000,
+		});
+		const experiment = {
+			repositoryDir: repository.dir,
+			runsRoot: repository.runsRoot,
+			baselineRef: repository.baselineSha,
+			candidateRef: repository.baselineSha,
+			mode: "aa-calibration" as const,
+			repetitions: 1,
+			simulatorNoise: { model },
+		};
+
+		const result = await runCandidateExperiment({ ...experiment, candidateId: "candidate-simulator" }, dependencies);
+
+		const [baseline, candidate] = runtime.suiteCalls;
+		expect(baseline?.target.manifest.evalSuite.simulatedUser).toBeUndefined();
+		expect(candidate?.target.manifest.evalSuite.simulatedUser?.id).toBe("user-alternate");
+		// Same cases, same scoring identity: the user model is the only thing that
+		// moved, which is the whole reason the pair can be read at all.
+		expect(candidate?.target.suiteHash).toBe(baseline?.target.suiteHash);
+		expect(candidate?.target.datasetHash).toBe(baseline?.target.datasetHash);
+		expect(candidate?.target.tasks).toEqual(baseline?.target.tasks);
+		expect(compareOptions).toEqual([{ mode: "aa-calibration", surface: "development", allowAxes: ["simulatedUser"] }]);
+		expect(candidateStatus(result.record)).toBe("evaluated");
+
+		// Refused before a worktree, a target load or a token is spent.
+		await expect(runCandidateExperiment(
+			{ ...experiment, mode: "candidate", candidateRef: repository.candidateSha, candidateId: "candidate-simulator-2" },
+			dependencies,
+		)).rejects.toThrow(/never candidate evidence/);
+		await expect(runCandidateExperiment(
+			{ ...experiment, sealedCorpus: corpusFixture("sealed").ref, candidateId: "candidate-simulator-3" },
+			dependencies,
+		)).rejects.toThrow(/sealed holdout cannot run a second user model/);
+		expect(runtime.suiteCalls).toHaveLength(2);
+	});
+
 	it("leaves durable state at validated when comparison is invalid", async () => {
 		const repository = createRepository({ path: "skills/check-dbo/SKILL.md", content: "candidate skill\n" });
 		const runtime = fakeRuntime({ compareStatus: "invalid" });
@@ -1413,5 +1505,129 @@ permissions:
 		expect(() => comparisonGateEvidence({ ...result.compare, b: legacyCandidate }))
 			.toThrow(/exact comparison gate requires ordered final RunArtifact hashes/);
 		assertCheckoutUnchanged(repository);
+	});
+});
+
+describe("an exam that cites its check", () => {
+	function experiment(
+		repository: RepositoryFixture,
+		candidateId: string,
+		extra: Partial<Parameters<typeof runCandidateExperiment>[0]> = {},
+	): Parameters<typeof runCandidateExperiment>[0] {
+		return {
+			repositoryDir: repository.dir,
+			runsRoot: repository.runsRoot,
+			baselineRef: repository.baselineSha,
+			candidateRef: repository.candidateSha,
+			mode: "candidate",
+			repetitions: 2,
+			candidateId,
+			projectId: "project-1",
+			...extra,
+		};
+	}
+
+	it("runs only the sealed pair and carries the check's development evidence whole", async () => {
+		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
+		const development = corpusFixture("development", "DEVELOPMENT_CASE_INPUT", "reviewed basket");
+		const sealed = corpusFixture("sealed", "SEALED_CASE_INPUT_4471", "private holdout");
+		const runtime = fakeRuntime();
+
+		const check = await runCandidateExperiment(
+			experiment(repository, "candidate-check", { developmentCorpus: development.ref }),
+			runtime.dependencies,
+		);
+		expect(runtime.suiteCalls.map((call) => call.options.label)).toEqual(["baseline", "candidate"]);
+		const checkEvaluated = check.record.events.at(-1);
+		if (checkEvaluated?.type !== "evaluated") throw new Error("the check did not reach evaluated");
+		expect(checkEvaluated.evaluation.sealedHoldout).toBeUndefined();
+
+		const exam = await runCandidateExperiment(
+			experiment(repository, "candidate-exam", {
+				developmentCorpus: development.ref,
+				sealedCorpus: sealed.ref,
+				developmentEvidenceFrom: { candidateId: "candidate-check", expectedHash: hashValue(check.record) },
+			}),
+			runtime.dependencies,
+		);
+		// Two more suite calls, both sealed: the development pair was cited, not
+		// measured, and the reuse seam was never asked for a development baseline.
+		expect(runtime.suiteCalls.slice(2).map((call) => call.options.evidenceVisibility)).toEqual(["sealed", "sealed"]);
+		expect(runtime.reuseQueries.map((query) => query.evidenceVisibility)).toEqual(["development", "sealed"]);
+		expect(exam.baseline.evalRunId).toBe(check.baseline.evalRunId);
+		expect(exam.candidate.evalRunId).toBe(check.candidate.evalRunId);
+		expect(exam.baselineReused).toBe(true);
+		const examEvaluated = exam.record.events.at(-1);
+		if (examEvaluated?.type !== "evaluated") throw new Error("the exam did not reach evaluated");
+		expect(examEvaluated.evaluation.development).toEqual(checkEvaluated.evaluation.development);
+		expect(examEvaluated.evaluation.sealedHoldout?.comparison).toMatchObject({ surface: "sealed" });
+		expect(examEvaluated.evaluation.experimentId).toBe("candidate-exam");
+		// The exam is its own design: the citation is part of it.
+		expect(exam.designHash).not.toBe(check.designHash);
+		assertCheckoutUnchanged(repository);
+	});
+
+	it("refuses a check that changed, one on another basket, and one that already holds sealed evidence", async () => {
+		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
+		const development = corpusFixture("development", "DEVELOPMENT_CASE_INPUT", "reviewed basket");
+		const other = corpusFixture("development", "OTHER_DEVELOPMENT_INPUT", "another basket");
+		const sealed = corpusFixture("sealed", "SEALED_CASE_INPUT_9083", "private holdout");
+		const runtime = fakeRuntime();
+		const check = await runCandidateExperiment(
+			experiment(repository, "candidate-check", { developmentCorpus: development.ref }),
+			runtime.dependencies,
+		);
+		const full = await runCandidateExperiment(
+			experiment(repository, "candidate-full", { developmentCorpus: development.ref, sealedCorpus: sealed.ref }),
+			runtime.dependencies,
+		);
+		const measured = runtime.suiteCalls.length;
+
+		const refusals: [string, Parameters<typeof runCandidateExperiment>[0], RegExp][] = [
+			[
+				"candidate-exam-stale",
+				experiment(repository, "candidate-exam-stale", {
+					developmentCorpus: development.ref,
+					sealedCorpus: sealed.ref,
+					developmentEvidenceFrom: { candidateId: "candidate-check", expectedHash: hashValue({ not: "the record" }) },
+				}),
+				/changed since it was read/,
+			],
+			[
+				"candidate-exam-basket",
+				experiment(repository, "candidate-exam-basket", {
+					developmentCorpus: other.ref,
+					sealedCorpus: sealed.ref,
+					developmentEvidenceFrom: { candidateId: "candidate-check", expectedHash: hashValue(check.record) },
+				}),
+				/measured another development corpus/,
+			],
+			[
+				"candidate-exam-twice",
+				experiment(repository, "candidate-exam-twice", {
+					developmentCorpus: development.ref,
+					sealedCorpus: sealed.ref,
+					developmentEvidenceFrom: { candidateId: "candidate-full", expectedHash: hashValue(full.record) },
+				}),
+				/already carries sealed evidence/,
+			],
+		];
+		for (const [candidateId, options, expected] of refusals) {
+			let thrown: unknown;
+			try {
+				await runCandidateExperiment(options, runtime.dependencies);
+			} catch (error) {
+				thrown = error;
+			}
+			expect(thrown, candidateId).toBeInstanceOf(CandidateExperimentError);
+			expect((thrown as Error).message).toMatch(expected);
+			// The exam stopped before its first sealed case: the refusal belongs to
+			// the development phase, and the record stays at validated.
+			expect((thrown as CandidateExperimentError).phase).toBe("development");
+			const stalled = JSON.parse(readFileSync(join(repository.runsRoot, "candidates", candidateId, "candidate.json"), "utf8")) as { events: { type: string }[] };
+			expect(stalled.events.at(-1)?.type).toBe("validated");
+		}
+		// Not one Target execution was spent on a refused citation.
+		expect(runtime.suiteCalls).toHaveLength(measured);
 	});
 });

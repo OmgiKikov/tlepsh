@@ -125,13 +125,13 @@ function changeLines(card: ExecutiveVersionCard, paint: Paint): string[] {
 function artifactLine(card: ExecutiveVersionCard, paint: Paint): string {
 	const parts: string[] = [];
 	if (card.artifacts.passport.status === "known") {
-		parts.push(`${card.artifacts.passport.value.path} (${shortHash(card.artifacts.passport.value.sha256)})`);
+		parts.push(`${paint.link(card.artifacts.passport.value.path)} (${shortHash(card.artifacts.passport.value.sha256)})`);
 	} else {
 		parts.push(`${t("version-card.passport")} ${unknown(card.artifacts.passport, paint)}`);
 	}
 	if (card.artifacts.dataset.status === "known") {
 		const dataset = card.artifacts.dataset.value;
-		parts.push(`${dataset.path} (${t("version-card.dialogues", { count: dataset.dialogues })}, ${shortHash(dataset.sha256)})`);
+		parts.push(`${paint.link(dataset.path)} (${t("version-card.dialogues", { count: dataset.dialogues })}, ${shortHash(dataset.sha256)})`);
 	} else {
 		parts.push(`${t("version-card.dataset")} ${unknown(card.artifacts.dataset, paint)}`);
 	}

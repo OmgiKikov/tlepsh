@@ -19,6 +19,8 @@ import {
 	AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS,
 	buildBuilderPiArgs,
 	launchBuilderPi,
+	mergeOpenRouterChatOverrides,
+	OPENROUTER_CHAT_OVERRIDES_KEY,
 	resolveBuilderAssets,
 	resolveBuilderHome,
 	resolveBuilderSessionMode,
@@ -507,5 +509,90 @@ describe("Builder Pi runtime", () => {
 		expect(targetRunner).toHaveBeenCalledOnce();
 		expect(main).toHaveBeenCalledTimes(2);
 		expect(main.mock.calls[1]?.[0]).toContain("--continue");
+	});
+});
+
+/**
+ * Pi's hydrated OpenRouter catalog routes Anthropic models through the
+ * messages API at `https://openrouter.ai/api`, but its runtime dispatches by
+ * provider and sends them to `/api/chat/completions`, which OpenRouter answers
+ * with a 404 page (live session 10). The Builder home's `models.json` overrides
+ * every such entry with the chat-completions route OpenRouter serves.
+ */
+describe("OpenRouter Anthropic models take the chat-completions route", () => {
+	const sonnet = {
+		id: "anthropic/claude-sonnet-4.6",
+		name: "Anthropic: Claude Sonnet 4.6",
+		api: "anthropic-messages",
+		baseUrl: "https://openrouter.ai/api",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+		contextWindow: 1_000_000,
+		maxTokens: 64_000,
+		thinkingLevelMap: { off: "none", medium: "medium" },
+		compat: { forceAdaptiveThinking: true },
+	};
+	const kimi = { id: "moonshotai/kimi-k2.6", api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1", reasoning: true };
+	const store = { openrouter: { models: [sonnet, kimi] } };
+
+	it("derives one chat-completions twin per anthropic-messages entry, and nothing else", () => {
+		const next = mergeOpenRouterChatOverrides(undefined, store);
+		expect(next).toEqual({
+			providers: {
+				openrouter: {
+					models: [{
+						id: sonnet.id,
+						name: sonnet.name,
+						input: sonnet.input,
+						reasoning: true,
+						contextWindow: 1_000_000,
+						maxTokens: 64_000,
+						cost: sonnet.cost,
+						api: "openai-completions",
+						baseUrl: "https://openrouter.ai/api/v1",
+						compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter" },
+					}],
+				},
+			},
+			[OPENROUTER_CHAT_OVERRIDES_KEY]: [sonnet.id],
+		});
+		// Idempotent: the file it just wrote needs no rewrite.
+		expect(mergeOpenRouterChatOverrides(next, store)).toBeNull();
+		// A catalog with no Anthropic entry and no earlier override touches nothing.
+		expect(mergeOpenRouterChatOverrides(undefined, { openrouter: { models: [kimi] } })).toBeNull();
+		expect(mergeOpenRouterChatOverrides({ providers: { mine: { baseUrl: "http://x", api: "openai-completions", models: [] } } }, {})).toBeNull();
+	});
+
+	it("keeps the operator's own entries, lets them win by id, and retires its own when the catalog moves on", () => {
+		const operator = { id: "anthropic/claude-sonnet-4.6", api: "openai-completions", baseUrl: "https://my-proxy.example/v1" };
+		const other = { id: "openai/gpt-5", api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" };
+		const existing = { providers: { openrouter: { models: [operator, other] }, mine: { baseUrl: "http://x", api: "openai-completions", models: [] } } };
+		// The operator already routes Sonnet through their own proxy: nothing of ours is added.
+		expect(mergeOpenRouterChatOverrides(existing, store)).toBeNull();
+
+		const withOurs = mergeOpenRouterChatOverrides({ providers: { openrouter: { models: [other] } } }, store)!;
+		expect(withOurs.providers).toMatchObject({ openrouter: { models: [other, expect.objectContaining({ id: sonnet.id, api: "openai-completions" })] } });
+		// The catalog no longer lists Sonnet under the messages API: ours goes, the operator's stays.
+		const retired = mergeOpenRouterChatOverrides(withOurs, { openrouter: { models: [kimi] } })!;
+		expect(retired).toEqual({ providers: { openrouter: { models: [other] } } });
+		// And when nothing of the operator's is left, the provider block goes with it.
+		const alone = mergeOpenRouterChatOverrides(undefined, store)!;
+		expect(mergeOpenRouterChatOverrides(alone, { openrouter: { models: [] } })).toEqual({ providers: {} });
+	});
+
+	it("writes the overrides into the Builder home at launch, from the catalog Pi hydrated", async () => {
+		const projectDir = root("ahde-builder-openrouter-");
+		const builderHome = join(projectDir, "builder-home");
+		mkdirSync(join(builderHome, "config"), { recursive: true });
+		writeFileSync(join(builderHome, "config", "models-store.json"), JSON.stringify(store));
+		await launchBuilderPi({ projectDir, stateRoot: join(projectDir, ".private-ahde"), builderHome, runsRoot: join(projectDir, "evidence"), projectId: "demo", main: vi.fn(async () => undefined) });
+		const written = JSON.parse(readFileSync(join(builderHome, "config", "models.json"), "utf8")) as Record<string, unknown>;
+		expect(written[OPENROUTER_CHAT_OVERRIDES_KEY]).toEqual([sonnet.id]);
+		expect(written.providers).toMatchObject({ openrouter: { models: [expect.objectContaining({ id: sonnet.id, baseUrl: "https://openrouter.ai/api/v1" })] } });
+		// A models.json that does not parse is the operator's to notice, never ours to replace.
+		writeFileSync(join(builderHome, "config", "models.json"), "{ not json");
+		await launchBuilderPi({ projectDir, stateRoot: join(projectDir, ".private-ahde"), builderHome, runsRoot: join(projectDir, "evidence"), projectId: "demo", main: vi.fn(async () => undefined) });
+		expect(readFileSync(join(builderHome, "config", "models.json"), "utf8")).toBe("{ not json");
 	});
 });

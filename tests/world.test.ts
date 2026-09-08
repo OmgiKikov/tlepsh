@@ -249,7 +249,7 @@ describe("the four-line card", () => {
 			simulatedUser: { goal: "добиться блокировки договора", maxTurns: 4 },
 			graders: [{ type: "tool_called", tool: "check_account" }],
 		});
-		expect(lines).toHaveLength(5);
+		expect(lines).toHaveLength(6);
 		// The card is headed by the case's own words, so a screen of cards says
 		// which case each one is before it says who is inside it.
 		expect(lines[0]).toBe("«Обращение: заблокируйте договор 42»");
@@ -258,7 +258,8 @@ describe("the four-line card", () => {
 		// happened to be written.
 		expect(lines[2]).toBe("      что есть: accounts.42.limits=none · accounts.42.status=ok · client.name=Иван Петров");
 		expect(lines[3]).toBe("      что хочет: добиться блокировки договора");
-		expect(lines[4]).toBe('      что должно: accounts.42.status equals "frozen" · tool check_account');
+		expect(lines[4]).toContain("4");
+		expect(lines[5]).toBe('      что должно: accounts.42.status equals "frozen" · tool check_account');
 	});
 
 	it("falls back to the persona and to the case input, and says English the same way", () => {
@@ -287,7 +288,7 @@ describe("the four-line card", () => {
 		expect(lines[4]).toBe('      must: status equals "closed"');
 	});
 
-	it("renders a case without a world exactly as it always has", () => {
+	it("keeps the plain case details and labels its source as an unverified claim", () => {
 		setLanguage("en");
 		const plain = datasetCasePreview(CorpusTaskSchema.parse({
 			id: "task_004",
@@ -301,7 +302,8 @@ describe("the four-line card", () => {
 			"Классифицируй обращение.",
 			"      expected: жалоба",
 			"      live user: получить ответ as торопится · up to 3 turns",
-			"      metadata: source=zendesk",
+			"      source claims (not verified):",
+			"        source=zendesk",
 			"      graders: contains “жалоба”",
 		]);
 	});

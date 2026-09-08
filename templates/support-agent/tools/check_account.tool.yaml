@@ -1,6 +1,5 @@
 # A declared tool the agent may call by name, sandboxed by these permissions.
-# Try it without spending a model call:
-#   ahde tool try --target . --tool check_account --input '{"id":"42"}'
+# Try it from the Builder conversation: ask to run check_account with {"id":"42"}.
 #
 # Note: a declared tool and a `bash bin/<name>` call are different things.
 # `tool_called` graders match whichever the agent actually used — the demo's

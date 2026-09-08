@@ -1,8 +1,8 @@
 
-import { isAbsolute } from "node:path";
+import { isAbsolute, posix } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { DEFAULT_PI_HARNESS_FILES, harnessFilesOf, TargetManifest, type ContainerBlock } from "../manifest.js";
+import { DEFAULT_PI_HARNESS_FILES, harnessFilesOf, TargetManifest } from "../manifest.js";
 import {
 	declaredHarnessRoots,
 	isDefaultPiHarness,
@@ -11,6 +11,8 @@ import {
 	withinDeclaredHarness,
 } from "../domain/harness-surface.js";
 import { canonicalJson, hashValue } from "../provenance.js";
+import { KB_DATA_DECLARATION, knowledgeBaseDeclared } from "../target/kb-tool.js";
+import { redactSensitiveText } from "../trace.js";
 // Type-only: the memory of what was already tried is compiled by the caller, so
 // this module stays a reader of Git and nothing else.
 import type { CompactExperimentHistory } from "./experiment-history.js";
@@ -34,6 +36,10 @@ const MAX_GIT_OUTPUT_BYTES = 10 * 1024 * 1024;
 export const TARGET_AUTHORING_LIMITS = Object.freeze({
 	manifestBytes: 1024 * 1024,
 	resourceBytes: 512 * 1024,
+	/** One complete read-only KB document per request, not a corpus dump. */
+	knowledgeBytes: 64 * 1024,
+	/** Bounds backtracking in the shared credential scanner on unbroken text. */
+	knowledgeLineChars: 8 * 1024,
 	aggregateBytes: 8 * 1024 * 1024,
 	projectionBytes: 512 * 1024,
 	maxSkills: 64,
@@ -112,8 +118,8 @@ export interface TargetAuthoringResource {
 }
 
 /**
- * Declared data is shape, never content: a Builder learns that `data/docs`
- * holds 412 files and 3.1 MB, and a bounded sample of their names.
+ * The data overview is shape only: file counts, sizes and bounded name samples.
+ * An explicit KB read returns its text separately, never in this listing.
  */
 export interface TargetAuthoringDataDirectory {
 	path: string;
@@ -128,6 +134,12 @@ export interface TargetAuthoringResourceRead extends TargetAuthoringResource {
 	content: string;
 }
 
+/** Evidence for editable development cases, never a writable Harness resource. */
+export interface TargetAuthoringKnowledgeRead extends Omit<TargetAuthoringResourceRead, "kind"> {
+	kind: "knowledge";
+	readOnly: true;
+}
+
 export const TargetAuthoringContextClaimSchema = z.strictObject({
 	algorithmId: z.literal("git-manifest-context-v1"),
 	targetId: z.string().min(1).max(100).regex(TARGET_ID),
@@ -140,7 +152,7 @@ export interface TargetAuthoringContextRequest {
 	repositoryDir: string;
 	/** Fresh host-derived identity. Builder Pi never supplies this authority. */
 	expectedTarget: { id: string; gitSha: string };
-	/** Absent returns the bounded overview; present returns one declared resource too. */
+	/** One declared harness resource or read-only data/kb .md/.txt document. */
 	resourcePath?: string;
 	/**
 	 * What this project already tried, compiled by the host from immutable
@@ -166,19 +178,18 @@ export interface TargetAuthoringContext {
 			id: string;
 			thinkingLevel: string;
 		};
-		/** Complete non-secret execution authority, including pinned containment. */
+		/** Complete non-secret execution authority. */
 		execution: {
 			tools: string[];
 			environmentAllowlist: string[];
 			network: "deny" | "allow";
 			sandbox: "required" | "best-effort" | "off";
-			container?: ContainerBlock;
 		};
 	};
 	resources: TargetAuthoringResource[];
 	/** Declared `data/**` directories, by shape only. */
 	data: TargetAuthoringDataDirectory[];
-	resource?: TargetAuthoringResourceRead;
+	resource?: TargetAuthoringResourceRead | TargetAuthoringKnowledgeRead;
 	/**
 	 * What was already tried on this Target: what each attempt changed, what it
 	 * was aiming at, what it scored and why it ended the way it did. Bounded to
@@ -188,6 +199,8 @@ export interface TargetAuthoringContext {
 	 */
 	priorAttempts?: CompactExperimentHistory["attempts"];
 	priorAttemptsOmitted?: number;
+	priorAttemptsUnreadable?: number;
+	priorAttemptsGuidance?: string;
 	launch: "ahde target";
 }
 
@@ -632,10 +645,10 @@ function boundedPriorAttempts(
 		Math.min(MAX_AUTHORING_HISTORY_PROJECTION_BYTES, MAX_CONTEXT_PROJECTION_BYTES - overviewBytes),
 	);
 	let attempts = [...history.attempts];
-	while (attempts.length > 0 && Buffer.byteLength(canonicalJson(attempts), "utf8") > budget) {
+	while (attempts.length > 0 && Buffer.byteLength(canonicalJson({ ...history, attempts }), "utf8") > budget) {
 		attempts = attempts.slice(0, -1);
 	}
-	return { attempts, omitted: history.omitted + (history.attempts.length - attempts.length) };
+	return { ...history, attempts, omitted: history.omitted + (history.attempts.length - attempts.length) };
 }
 
 /**
@@ -716,6 +729,11 @@ export function inspectTargetAuthoringContext(
 
 	const toolNames = new Set<string>();
 	const toolDeclarations: TargetAuthoringToolDeclaration[] = [];
+	const credentialEnvironmentNames = new Set([
+		...manifest.execution.environmentAllowlist,
+		...[manifest.model, manifest.evalSuite.judge, manifest.evalSuite.simulatedUser]
+			.flatMap((model) => model ? [model.apiKeyEnv] : []),
+	]);
 	for (const declaration of manifest.tools) {
 		const identity = classifyTargetToolDescriptorPath(declaration);
 		if (!identity || toolNames.has(identity.name)) {
@@ -742,6 +760,7 @@ export function inspectTargetAuthoringContext(
 		} catch (error) {
 			return contextError("TARGET_CONTEXT_INVALID", "A declared Target tool descriptor is invalid.", error);
 		}
+		for (const name of descriptor.permissions.environment) credentialEnvironmentNames.add(name);
 		const executablePath = descriptor.command.argv[0];
 		if (identity.layout === "single-file") {
 			if (executablePath !== `bin/${name}`) {
@@ -797,8 +816,8 @@ export function inspectTargetAuthoringContext(
 			// declaration, or is not a resource at all. Either way it is not one of
 			// these, and a declared glob may not smuggle it in a second time.
 			if (classifyTargetAuthoringResourcePath(entry.path)) continue;
-			// Host-owned configuration, evaluation inputs, the shape-only data tree
-			// and hidden files are never readable, whatever the manifest globs over.
+			// Host-owned configuration, evaluation inputs, data and hidden files
+			// never become harness resources, whatever the manifest globs over.
 			if (reservedHarnessPath(entry.path) || !safeHarnessPath(entry.path)) continue;
 			if (entry.path.split("/").some((segment) => segment.startsWith("."))) continue;
 			if (entry.mode === "120000") {
@@ -848,8 +867,31 @@ export function inspectTargetAuthoringContext(
 	});
 
 	const ordered = [...resources.values()].sort((left, right) => left.summary.path.localeCompare(right.summary.path));
-	if (requestedPath && !resources.has(requestedPath)) {
+	// Keep KB reads outside `resources`: that list also defines write-side closure.
+	// Declaring data/kb/public must not grant access to data/kb/private or eval
+	// files a manifest has placed inside an otherwise readable KB directory.
+	const knowledgePath = requestedPath !== undefined &&
+		requestedPath.startsWith(`${KB_DATA_DECLARATION}/`) && /\.(md|txt)$/i.test(requestedPath) &&
+		!requestedPath.split("/").slice(2).some(reservedHarnessPath) &&
+		![manifest.evalSuite.dataset, manifest.evalSuite.graders].some((path) => posix.normalize(path) === requestedPath) &&
+		manifest.data.some((declaration) => knowledgeBaseDeclared([declaration]) && requestedPath.startsWith(`${declaration}/`))
+		? requestedPath : undefined;
+	if (requestedPath && !resources.has(requestedPath) && !knowledgePath) {
 		contextError("TARGET_RESOURCE_DENIED", "Only a declared Target authoring resource may be inspected.");
+	}
+	let knowledge: TargetAuthoringKnowledgeRead | undefined;
+	if (knowledgePath) {
+		const blob = readBlob(repositoryDir, request.expectedTarget.gitSha, knowledgePath, TARGET_AUTHORING_LIMITS.knowledgeBytes, ["100644"]);
+		if (blob.content.split("\n").some((line) => line.length > TARGET_AUTHORING_LIMITS.knowledgeLineChars)) {
+			contextError("TARGET_RESOURCE_TOO_LARGE", "KB text has a line over 8192 characters; split long text into paragraphs before authoring.");
+		}
+		const credentialValues = [...credentialEnvironmentNames].map((name) => process.env[name] ?? "");
+		// Refuse, rather than redact, so content and its hash still name exact bytes.
+		// The shared scrubber expands ordinary tabs; all other changes are unsafe.
+		if (redactSensitiveText(blob.content, credentialValues) !== blob.content.replace(/\t/g, "    ")) {
+			contextError("TARGET_RESOURCE_DENIED", "KB text contains credential-shaped content or terminal controls; it cannot enter authoring context.");
+		}
+		knowledge = { kind: "knowledge", readOnly: true, name: null, path: knowledgePath, ...blob };
 	}
 
 	const target = {
@@ -865,9 +907,6 @@ export function inspectTargetAuthoringContext(
 			environmentAllowlist: [...manifest.execution.environmentAllowlist],
 			network: manifest.execution.network,
 			sandbox: manifest.execution.sandbox,
-			...(manifest.execution.container
-				? { container: { ...manifest.execution.container } }
-				: {}),
 		},
 	};
 	const summaries = ordered.map((item) => item.summary);
@@ -905,16 +944,26 @@ export function inspectTargetAuthoringContext(
 		resources: summaries,
 		data,
 	});
-	return {
+	const context: TargetAuthoringContext = {
 		schemaVersion: 1,
 		algorithmId: "git-manifest-context-v1",
 		contextHash,
 		claim,
 		target,
 		resources: summaries,
-		...(history ? { priorAttempts: history.attempts, priorAttemptsOmitted: history.omitted } : {}),
+		...(history ? {
+			priorAttempts: history.attempts,
+			priorAttemptsOmitted: history.omitted,
+			priorAttemptsUnreadable: history.unreadable,
+			priorAttemptsGuidance: history.guidance,
+		} : {}),
 		data,
 		...(selected ? { resource: { ...selected.summary, content: selected.content } } : {}),
+		...(knowledge ? { resource: knowledge } : {}),
 		launch: "ahde target",
 	};
+	if (knowledge && Buffer.byteLength(JSON.stringify(context, null, 2), "utf8") > MAX_CONTEXT_PROJECTION_BYTES) {
+		contextError("TARGET_RESOURCE_TOO_LARGE", "Target with its KB document exceeds the model-context limit.");
+	}
+	return context;
 }

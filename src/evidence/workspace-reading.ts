@@ -11,7 +11,7 @@ export function renderRunReading(reading: RunReading): string {
 ${reading.answerQuote ? `<blockquote><span>${h(t("reading.answer"))}</span><p>“${h(reading.answerQuote.text)}”</p>${reading.answerQuote.clipped ? `<small>${h(t("reading.quotedClip"))}</small>` : ""}</blockquote>` : ""}
 ${reading.observations.length ? `<div class="w-reading-observed"><h4>${h(t("reading.observed"))}</h4>${reading.observations.map((line) => `<p>${h(line)}</p>`).join("")}</div>` : ""}
 ${reading.expectations.length || reading.checks.length ? `<details><summary>${h(t("reading.openChecks"))}</summary>${reading.expectations.length ? `<h4>${h(t("reading.expected"))}</h4>${reading.expectations.map((line) => `<p>${h(line)}</p>`).join("")}` : ""}${reading.checks.map((check) => `<p class="w-reading-reason"><span>${h(check.name)}</span><q>${h(check.reason)}</q></p>`).join("")}</details>` : ""}
-<div class="w-reading-change"><h4>${h(t("reading.change"))}</h4><p>${h(change)}${comparison ? ` <a href="/candidates/${encodeURIComponent(comparison.candidateId)}">${h(t("evidence.replayOverview"))} →</a>` : ""}</p></div>
+<div class="w-reading-change"><h4>${h(t("reading.change"))}</h4><p>${h(change)}${comparison ? ` <a href="/candidates/${encodeURIComponent(comparison.candidateId)}">${h(t("evidence.comparisonOverview"))} →</a>` : ""}</p></div>
 ${reading.uncertainties.length ? `<div class="w-reading-limit"><h4>${h(t("reading.uncertain"))}</h4>${reading.uncertainties.map((line) => `<p>${h(line)}</p>`).join("")}</div>` : ""}
 </section>`;
 }

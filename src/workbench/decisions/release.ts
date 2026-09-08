@@ -7,9 +7,12 @@ import { hashValue } from "../../provenance.js";
 import { clearWorkbenchFocus, loadWorkbenchFocus, saveWorkbenchFocus } from "../focus.js";
 import { WorkbenchStaleDecisionError } from "../errors.js";
 import { candidateSummary, requireCandidate } from "../resolution.js";
-import { requireOpenTerminalCandidate, actorId, exactSame } from "../workbench.js";
+import { requireOpenTerminalCandidate, exactSame } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
+import { decideCandidateRejection, promoteReviewedCandidate, reviewCandidate } from "../../application/candidate-review.js";
+import { describeTargetAdoption } from "../../application/target-adoption.js";
+import { describeCycleContinuation } from "../cycle-continuation.js";
 
 export async function decideReviewCandidate(
 	host: DecisionHost,
@@ -24,7 +27,7 @@ export async function decideReviewCandidate(
 	const current = host.decisionInventory(input.kind);
 	const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
 	if (hashValue(after) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-	const reviewed = host.dependencies.reviewCandidate({ runsRoot: host.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, ...(proposal ? { expectedProposalHash: proposal.proposalHash } : {}), recommendation: input.recommendation, reason: input.reason, actorId: actor, now: host.dependencies.now });
+	const reviewed = reviewCandidate({ runsRoot: host.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, ...(proposal ? { expectedProposalHash: proposal.proposalHash } : {}), recommendation: input.recommendation, reason: input.reason, actorId: actor, now: host.dependencies.now });
 	const settled = host.select("candidate", reviewed.candidateId);
 	return { kind: input.kind, message: t("message.review-recorded"), result: candidateSummary(reviewed), view: await host.viewOf(settled) };
 }
@@ -40,7 +43,7 @@ export async function decidePromoteCandidate(
 	const actor = await host.confirm(input, gate, t("confirm.title.promote-candidate"), before, options.signal);
 	const current = host.decisionInventory(input.kind);
 	if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-	const promoted = host.dependencies.promoteCandidate({ repositoryDir: host.projectDir, runsRoot: host.runsRoot, stateRoot: host.stateRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: host.dependencies.now });
+	const promoted = promoteReviewedCandidate({ repositoryDir: host.projectDir, runsRoot: host.runsRoot, stateRoot: host.stateRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: host.dependencies.now });
 	// The promotion is written. Pinning what it fixed comes after, and its
 	// failure is a warning: a bookkeeping step never un-ships a release.
 	const guards = host.promotionGuards(promoted.record, promoted.tag);
@@ -77,9 +80,9 @@ export async function decideRejectCandidate(
 	const current = host.decisionInventory(input.kind);
 	if (hashValue(requireCandidate(current, ["evaluated", "reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 	const reviewedRecord = needsReview
-		? host.dependencies.reviewCandidate({ runsRoot: host.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: "reject", reason: input.reason, actorId: actor, now: host.dependencies.now })
+		? reviewCandidate({ runsRoot: host.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: "reject", reason: input.reason, actorId: actor, now: host.dependencies.now })
 		: candidate;
-	const rejected = host.dependencies.rejectCandidate({ runsRoot: host.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: hashValue(reviewedRecord), reason: input.reason, actorId: actor, now: host.dependencies.now });
+	const rejected = decideCandidateRejection({ runsRoot: host.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: hashValue(reviewedRecord), reason: input.reason, actorId: actor, now: host.dependencies.now });
 	const settled = host.select("candidate", rejected.candidateId);
 	return { kind: input.kind, message: t("message.candidate-rejected"), result: candidateSummary(rejected), view: await host.viewOf(settled) };
 }
@@ -93,7 +96,7 @@ export async function decideAdoptCandidate(
 	const candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
 	if (candidateStatus(candidate) !== "promoted") throw new Error("only a promoted candidate can be adopted");
 	if (inventory.adoptedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
-	const describe = () => host.dependencies.describeTargetAdoption({
+	const describe = () => describeTargetAdoption({
 		repositoryDir: host.projectDir,
 		runsRoot: host.runsRoot,
 		candidateId: candidate.candidateId,
@@ -154,7 +157,7 @@ export async function decideContinueCycle(
 		targetId: inventory.target.manifest.id,
 		candidateId: candidate.candidateId,
 	};
-	const before = host.dependencies.describeCycleContinuation(continuationOptions);
+	const before = describeCycleContinuation(continuationOptions);
 	const actor = await host.confirm(
 		input,
 		gate,
@@ -165,7 +168,7 @@ export async function decideContinueCycle(
 	const current = host.decisionInventory(input.kind);
 	if (current.continuedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
 	if (hashValue(requireOpenTerminalCandidate(current, candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-	const after = host.dependencies.describeCycleContinuation(continuationOptions);
+	const after = describeCycleContinuation(continuationOptions);
 	if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 	const result = host.dependencies.recordCycleContinuation({
 		...continuationOptions,

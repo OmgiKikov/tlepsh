@@ -444,7 +444,7 @@ function compareRunPreview(runsRoot: string, verified: VerifiedEvalRun, run: Run
 	};
 }
 
-/** The same deterministic case order for excerpts and replay navigation. */
+/** The same deterministic case order for excerpts and candidate case listings. */
 export function orderedComparisonRows(comparison: Pick<CompareResult, "rows" | "excluded">): CompareResult["rows"] {
 	const exclusions = new Set(comparison.excluded.map((task) => task.taskId));
 	return [...comparison.rows].sort((left, right) => {
@@ -456,11 +456,11 @@ export function orderedComparisonRows(comparison: Pick<CompareResult, "rows" | "
 }
 
 /** The identity two arms share: one task, one repetition. */
-export function repetitionKey(run: RunRecord): string {
+function repetitionKey(run: RunRecord): string {
 	return JSON.stringify([run.taskId, run.repetitionIndex]);
 }
 
-export interface PairedRuns {
+interface PairedRuns {
 	row: CompareRow;
 	baseline: RunRecord;
 	candidate: RunRecord;
@@ -471,7 +471,7 @@ export interface PairedRuns {
  * the candidate run of the same task and repetition. A repetition one arm lacks
  * is left out; a reader that refuses ambiguous repetitions checks that first.
  */
-export function pairedRuns(baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, rows: readonly CompareRow[]): PairedRuns[] {
+function pairedRuns(baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, rows: readonly CompareRow[]): PairedRuns[] {
 	const after = new Map(candidate.runs.map((run) => [repetitionKey(run), run]));
 	const byTask = new Map<string, RunRecord[]>();
 	for (const run of baseline.runs) byTask.set(run.taskId, [...(byTask.get(run.taskId) ?? []), run]);

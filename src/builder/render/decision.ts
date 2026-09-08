@@ -14,16 +14,18 @@ import { searchCandidateLine } from "../../application/proposal-search.js";
 import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { regradeHeadline, renderRegrade } from "./regrade.js";
+import { renderBasket } from "./basket.js";
 import { headline, joinNonEmpty, oneLine, percent, points, section, shortHash, shortSha, trimSeparator, wrap } from "./format.js";
 import { blockedReasonText } from "../../workbench/errors.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
-import { renderCandidate, renderTraces } from "./view.js";
-import { modelExperimentHeadline, renderModelAcceptance, renderModelExperiment } from "./model-experiment.js";
+import { renderCandidate, renderTraces, type RenderTracesOptions } from "./view.js";
 
 export interface RenderDecisionOptions {
 	/** Capability-scoped live trace URL retained by the host after a run. */
 	liveTraceUrl?: string | null;
+	/** The run rows of the evaluation this decision produced, when readable. */
+	runs?: RenderTracesOptions["runs"];
 }
 
 function nextLine(view: WorkbenchView, paint: Paint): string {
@@ -38,8 +40,12 @@ function runNextLine(result: Extract<WorkbenchDecisionResult, { kind: "run-eval"
 
 function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>["result"], paint: Paint, options: RenderDecisionOptions): string[] {
 	// One `Next` per screen: `renderDecision` closes with the stage's own.
-	const lines = renderTraces(result, paint, { next: false, compact: true });
+	const lines = renderTraces(result, paint, { next: false, compact: true, runs: options.runs ?? null });
 	if (options.liveTraceUrl) lines.push(`${paint.dim(t("label.live-trace"))} ${paint.link(options.liveTraceUrl)} ${paint.dim(t("result.retained"))}`);
+	// The diagnosis says what the agent did; the basket says what the cases did.
+	// It closes the panel because its last line is the rule the next decision —
+	// harder cases, a repair, a fix — has to be taken under.
+	if (result.basket) lines.push("", ...renderBasket(result.basket, paint));
 	return lines;
 }
 
@@ -73,7 +79,7 @@ function verificationLines(result: WorkbenchVerifyCandidateResult, paint: Paint,
 	}
 	const lines: string[] = [];
 	if (result.screen) lines.push(screenLine(result.screen, paint));
-	lines.push(...renderCandidate(result.candidate, paint, t("candidate.verified")));
+	lines.push(...renderCandidate(result.candidate, paint, t(result.sealedHoldout.executed ? "candidate.verified" : "candidate.checked")));
 	lines.push(nextLine(view, paint));
 	return lines;
 }
@@ -174,12 +180,42 @@ function shipLines(result: WorkbenchShipResult, paint: Paint, view: WorkbenchVie
 	return lines;
 }
 
+/** At most this many critic findings on the panel; the receipt holds every one. */
+const CRITIC_FINDINGS_SHOWN = 12;
+
+/**
+ * The critic's reading: counts first, then every case that needs a hand —
+ * repair with its fix, invalid with its reasons — and the rule the panel
+ * stands on: a failing case is never removed for failing.
+ */
+export function renderCritic(
+	result: Extract<WorkbenchDecisionResult, { kind: "critique-corpus" }>["result"],
+	paint: Paint,
+): string[] {
+	const { counts } = result;
+	const lines = [
+		`${section(t("panel.critic"), paint)} ${paint.dim(result.subject.id)} ${paint.dim(`· ${result.judge}`)}`,
+		`${counts.invalid > 0 ? paint.warning(t("critic.summary", counts)) : paint.success(t("critic.summary", counts))}`,
+	];
+	const attention = result.findings.filter((finding) => finding.verdict !== "valid");
+	for (const finding of attention.slice(0, CRITIC_FINDINGS_SHOWN)) {
+		const verdict = t(`critic.verdict.${finding.verdict}`);
+		const tone = finding.verdict === "invalid" ? paint.error : finding.verdict === "repair" ? paint.warning : paint.muted;
+		lines.push(`  ${tone(verdict)} ${paint.dim(finding.taskId)}`);
+		for (const reason of finding.reasons.slice(0, 3)) lines.push(...wrap(reason, 110, "    "));
+		if (finding.fix?.note) lines.push(...wrap(`→ ${finding.fix.note}`, 110, "    ").map((line) => paint.dim(line)));
+	}
+	if (attention.length > CRITIC_FINDINGS_SHOWN) lines.push(paint.dim(`  … ${attention.length - CRITIC_FINDINGS_SHOWN} more in the receipt ${result.receiptId}`));
+	if (attention.length > 0) lines.push(paint.muted(t("critic.next")));
+	lines.push(paint.dim(t("basket.rule")));
+	return lines;
+}
+
+
 /** One human summary per consequential decision; never a JSON dump. */
 export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, options: RenderDecisionOptions = {}): string[] {
 	const view = result.view;
 	switch (result.kind) {
-		case "model-experiment": return [...renderModelExperiment(result.result.experiment, paint), paint.muted(t("models.no-switch"))];
-		case "accept-model": return renderModelAcceptance(result.result.receipt, paint);
 		case "scaffold-target":
 			return [
 				`${section(t("result.target-created"), paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
@@ -272,6 +308,19 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			} else {
 				lines.push(paint.muted(t("generate-holdout.sealed-note")));
 			}
+			const critic = result.result.critic;
+			if (critic && critic.dropped > 0) {
+				lines.push(paint.warning(t("critic.exam-dropped", {
+					dropped: plural(critic.dropped, "case"),
+					reasons: Object.entries(critic.byCategory).filter(([, count]) => count > 0).map(([category, count]) => `${category} ${count}`).join(", "),
+				})));
+			}
+			if (result.result.criticAnnotationsPath) {
+				lines.push(`${paint.dim(t("panel.critic"))} ${oneLine(result.result.criticAnnotationsPath, 200)}`);
+			}
+			if (result.result.coverage) {
+				lines.push(paint.dim(t("coverage.exam", { labelled: result.result.coverage.labelled, unlabelled: result.result.coverage.unlabelled })));
+			}
 			if (cases < SEALED_GATE_POLICY.minTasks) {
 				lines.push(paint.warning(t("generate-holdout.underpowered", {
 					cases: plural(cases, "case"),
@@ -308,6 +357,8 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 		}
 		case "regrade":
 			return [...renderRegrade(result.result, paint), nextLine(view, paint)];
+		case "critique-corpus":
+			return [...renderCritic(result.result, paint), nextLine(view, paint)];
 		case "run-current":
 			if (result.result.resolvedAs === "run-eval") return [...runLines(result.result, paint, options), runNextLine(result.result, view, paint)];
 			if (result.result.resolvedAs === "start-testing") return startTestingLines(result.result, paint, view, options);
@@ -321,10 +372,18 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 		case "improve":
 			return improveLines(result.result, paint, view);
 		case "apply-proposal": {
-			const lines = [
-				`${section(t("result.proposal-applied"), paint)} ${t("result.branch")} ${paint.bold(result.result.branch)} ${paint.dim(`· ${t("result.candidate-word")} ${shortSha(result.result.candidateSha)} · ${t("result.proposal-word")} ${shortHash(result.result.proposalHash)}`)}`,
-				paint.muted(t("result.checkout-unchanged")),
-			];
+			const built = result.result.firstBuild;
+			const lines = built
+				? [
+					// The first build moved the operator's own branch: say which, and
+					// what the next thing is, instead of describing a candidate.
+					`${section(t("result.agent-built"), paint)} ${t("result.branch")} ${paint.bold(built.branch)} ${paint.dim(`@ ${shortSha(built.targetGitSha)} · ${t("result.proposal-word")} ${shortHash(result.result.proposalHash)}`)}`,
+					paint.muted(t("result.first-build-note")),
+				]
+				: [
+					`${section(t("result.proposal-applied"), paint)} ${t("result.branch")} ${paint.bold(result.result.branch)} ${paint.dim(`· ${t("result.candidate-word")} ${shortSha(result.result.candidateSha)} · ${t("result.proposal-word")} ${shortHash(result.result.proposalHash)}`)}`,
+					paint.muted(t("result.checkout-unchanged")),
+				];
 			// A tool arrived with an executable contract nobody has measured yet.
 			// The draft is named here, once, with the one thing to do about it.
 			for (const drafted of result.result.contractCases ?? []) {
@@ -448,8 +507,6 @@ function verifyHeadline(result: WorkbenchVerifyCandidateResult): string {
 /** One-line headline for status bars and collapsed tool cards. */
 export function decisionHeadline(result: WorkbenchDecisionResult): string {
 	switch (result.kind) {
-		case "model-experiment": return modelExperimentHeadline(result.result.experiment);
-		case "accept-model": return t("models.accepted");
 		case "run-eval":
 			return runHeadline(result.result);
 		case "run-current":

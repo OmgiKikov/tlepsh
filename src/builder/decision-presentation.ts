@@ -5,7 +5,9 @@ import type { WorkbenchDecisionResult, WorkbenchStartTestingResult, WorkbenchVer
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import { compileBuilderPassport } from "./passport-presentation.js";
 import { renderAgentLogChart } from "./render/agent-log.js";
-import { decisionHeadline, renderDecision } from "./render/decision.js";
+import { decisionHeadline, renderDecision, type RenderDecisionOptions } from "./render/decision.js";
+import { collectEvalPage } from "../evidence/model.js";
+import type { EvalPageModel } from "../evidence/pages.js";
 import { oneLine } from "./render/format.js";
 import { handoffLines } from "./render/handoff.js";
 import { renderVersionPassport } from "./render/passport.js";
@@ -20,20 +22,15 @@ function startTestingTitle(result: WorkbenchStartTestingResult): { title: string
 }
 
 function verifyTitle(result: WorkbenchVerifyCandidateResult): { title: string; tone: TranscriptTone } {
-	return result.outcome === "stopped-by-screen"
-		? { title: t("panel.cheap-check-nothing"), tone: "info" }
-		: { title: t("panel.candidate-verified"), tone: "success" };
+	if (result.outcome === "stopped-by-screen") return { title: t("panel.cheap-check-nothing"), tone: "info" };
+	if (!result.sealedHoldout.executed) {
+		return { title: t("panel.candidate-checked"), tone: result.development.verdict === "regressed" ? "warning" : "success" };
+	}
+	return { title: t("panel.candidate-verified"), tone: "success" };
 }
 
 function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: TranscriptTone } {
 	switch (result.kind) {
-		case "model-experiment": return {
-			title: t("models.title"),
-			tone: result.result.experiment.status === "failed" ? "error"
-				: result.result.experiment.status === "stopped" ? "warning"
-					: result.result.experiment.recommendedArmId && result.result.experiment.recommendedArmId !== "baseline" ? "success" : "info",
-		};
-		case "accept-model": return { title: t("models.accepted"), tone: "success" };
 		case "run-eval": return { title: t("panel.run-complete"), tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
 		case "run-current":
 			if (result.result.resolvedAs === "run-eval") {
@@ -61,6 +58,10 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 				title: t("panel.regraded"),
 				tone: result.result.nowPassing + result.result.nowFailing > 0 ? "success" : "info",
 			};
+		// The critic's reading of the cases: invalid cases are a warning about the
+		// test, never a failure of the agent.
+		case "critique-corpus":
+			return { title: t("panel.critic"), tone: result.result.counts.invalid > 0 ? "warning" : "success" };
 		case "scaffold-target": return { title: t("panel.target-created"), tone: "success" };
 		case "wrap-target": return { title: t("panel.agent-wrapped"), tone: "success" };
 		case "configure-target": return { title: t("panel.target-configured"), tone: "success" };
@@ -80,7 +81,8 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 				title: t(result.result.reviewPath ? "panel.holdout-drafted" : "panel.holdout-generated"),
 				tone: result.result.reviewPath || result.result.cases < SEALED_GATE_POLICY.minTasks ? "warning" : "success",
 			};
-		case "apply-proposal": return { title: t("panel.proposal-applied"), tone: "success" };
+		case "apply-proposal":
+			return { title: t(result.result.firstBuild ? "panel.agent-built" : "panel.proposal-applied"), tone: "success" };
 		case "discard-proposal": return { title: t("panel.proposal-discarded"), tone: "info" };
 		case "abandon-candidate": return { title: t("panel.attempt-abandoned"), tone: "info" };
 		case "review-candidate": return { title: t("panel.review-recorded"), tone: "info" };
@@ -91,18 +93,32 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 	}
 }
 
-/** Link only a completed matched check, never a preliminary screen. */
-export function decisionReplayUrl(result: WorkbenchDecisionResult, evidenceUrl: string | null | undefined): string | null {
-	const candidate = result.kind === "ship" ? result.result.candidate
-		: result.kind === "verify-candidate" && result.result.outcome === "verified" ? result.result.candidate
-			: result.kind === "run-current" && result.result.resolvedAs === "verify-candidate" && result.result.outcome === "verified" ? result.result.candidate
-				: result.kind === "apply-proposal" && result.result.verification?.outcome === "verified" ? result.result.verification.candidate : null;
-	if (!candidate || !evidenceUrl) return null;
+/** The evaluation a decision just produced, if it produced one. */
+function decisionEvalRunId(result: WorkbenchDecisionResult): string | null {
+	switch (result.kind) {
+		case "run-eval": return result.result.evaluation.evalRunId;
+		case "run-current": return result.result.resolvedAs === "run-eval"
+			? result.result.evaluation.evalRunId
+			: result.result.resolvedAs === "start-testing" ? result.result.evaluation?.evaluation.evalRunId ?? null : null;
+		case "start-testing": return result.result.evaluation?.evaluation.evalRunId ?? null;
+		default: return null;
+	}
+}
+
+/**
+ * The case table a run result carries. Read through the Explorer's own page
+ * model so the panel and the browser agree cell for cell; unreadable rows
+ * leave the table off, never the result.
+ */
+function decisionRuns(result: WorkbenchDecisionResult, runsRoot: string, evalPage: (runsRoot: string, evalRunId: string) => EvalPageModel): RenderDecisionOptions["runs"] {
+	const evalRunId = decisionEvalRunId(result);
+	if (!evalRunId) return null;
 	try {
-		const base = new URL(evidenceUrl);
-		if (base.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) || base.username || base.password) return null;
-		return new URL(`/candidates/${encodeURIComponent(candidate.candidateId)}/replay`, base).toString();
-	} catch { return null; }
+		const page = evalPage(runsRoot, evalRunId);
+		return { rows: page.rows, modes: page.modes };
+	} catch {
+		return null;
+	}
 }
 
 /** One human result for both conversational decisions and shortcuts. */
@@ -111,6 +127,8 @@ export async function builderDecisionPresentation(result: WorkbenchDecisionResul
 	source: string;
 	liveTraceUrl?: string | null;
 	spend?: BuilderSpendReader | null;
+	/** Explorer page loader; a test injects page models here. */
+	evalPage?: (runsRoot: string, evalRunId: string) => EvalPageModel;
 }) {
 	const { liveTraceUrl, source: command, workbench, spend: spendReader } = options;
 	// Presentation is downstream of the durable decision: a rendering fault
@@ -121,16 +139,15 @@ export async function builderDecisionPresentation(result: WorkbenchDecisionResul
 	let headline: string;
 	try {
 		({ title, tone } = decisionTitle(result));
-		lines = renderDecision(result, markerPaint, { liveTraceUrl });
-		const replayUrl = decisionReplayUrl(result, liveTraceUrl);
-		if (replayUrl) lines.push(t("evidence.replayLink", { url: replayUrl }));
+		const runs = decisionRuns(result, workbench.runsRoot, options.evalPage ?? collectEvalPage);
+		lines = renderDecision(result, markerPaint, { liveTraceUrl, runs });
 		if (result.kind === "ship") {
 			try {
 				const { passport, card, reportWritten } = await compileBuilderPassport(workbench, { view: result.view, save: true });
 				lines.push(
 					"",
 					...renderExecutiveVersionCard(card, markerPaint),
-					reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
+					reportWritten ? t("release.html.saved", { path: markerPaint.link(reportWritten) }) : markerPaint.warning(t("release.html.not-saved")),
 					"",
 					...renderVersionPassport(passport, markerPaint),
 				);
@@ -152,7 +169,7 @@ export async function builderDecisionPresentation(result: WorkbenchDecisionResul
 		lines.push(...handoffLines(result, markerPaint));
 		headline = decisionHeadline(result);
 	} catch {
-		lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [t("card.live-trace-retained", { url: liveTraceUrl })] : [])];
+		lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [t("card.live-trace-retained", { url: markerPaint.link(liveTraceUrl) })] : [])];
 		headline = oneLine(result.message, 200);
 	}
 	// What it cost, from the records the measurement wrote. A decision that

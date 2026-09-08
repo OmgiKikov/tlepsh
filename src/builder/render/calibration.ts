@@ -1,6 +1,6 @@
 import type { WorkbenchCalibrationProjection } from "../../workbench/types.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
-import { band, interval, percent, section } from "./format.js";
+import { band, interval, percent, section, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 
 /** Half-width of the 95% interval in pass-rate points: the noise band. */
@@ -37,6 +37,13 @@ export function renderCalibration(calibration: WorkbenchCalibrationProjection, p
 			: [`${paint.dim(t("calibration.exam-size"))} ${t("exam.size-for-noise", {
 				cases: paint.bold(plural(calibration.recommendedExamCases, "case")),
 			})}`]),
+		// A simulator-noise band answers a different question than an A/A of the
+		// harness, so it says so before the healthy/unhealthy verdict is read.
+		// Wrapped rather than clipped: this is the sentence that stops the number
+		// being read as the agent's, and half of it would not.
+		...(calibration.simulator
+			? wrap(t("noise.simulator", { model: calibration.simulator.model })).map((line) => paint.warning(line))
+			: []),
 		healthy
 			? paint.muted(t("calibration.healthy"))
 			: paint.warning(t("calibration.unhealthy")),

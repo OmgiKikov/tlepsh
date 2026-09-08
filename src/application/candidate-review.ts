@@ -19,7 +19,7 @@ import {
 	type ImprovementExperimentDesign,
 } from "./improvement-experiment-design.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
-import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
+import { promotableVerdicts, regressionGuards, withinInfrastructureBudget, type GateSurface, type RegressionGuards } from "../domain/comparison-gate.js";
 import { CandidateProposalSchema } from "../builder/proposal-contract.js";
 import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
@@ -1053,6 +1053,39 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string, stat
 			`promotion refused by the comparison gate: development ${developmentEvidence.verdict}, sealed ${holdoutEvidence.verdict}`,
 		);
 	}
+	// The regression suite, read off the same development rows: what the base
+	// passed every time, the candidate must not fail every time. Recomputed
+	// here, so evidence recorded before the rule existed is still judged by it,
+	// and evidence that was recorded must agree with the runs.
+	const guards = regressionGuards(development.rows, development.a.repetitions);
+	const recorded = evaluated.evaluation.development.regressionGuards;
+	if (recorded && JSON.stringify(recorded) !== JSON.stringify(guards)) {
+		throw new Error("development regression-guard evidence does not match the recorded runs");
+	}
+	if (guards.broken.length > 0) throw new RegressionGuardsBrokenError(guards);
+}
+
+/**
+ * A refusal the operator acts on: the change un-fixed something the base
+ * version handled every time. Typed like `ProposalIneligibleError`, so the
+ * card says it in the operator's language and the English sentence stays for
+ * the model, scripts and tests.
+ */
+export class RegressionGuardsBrokenError extends Error {
+	readonly reason: { code: string; params: Record<string, number>; detail: string };
+
+	constructor(guards: RegressionGuards) {
+		super(
+			`promotion refused: ${guards.broken.length} of ${guards.guarded} development task(s) the base passed in every repetition ` +
+			`now fail in every repetition (${guards.broken.join(", ")}); fix the change or verify it again with more repetitions`,
+		);
+		this.name = "RegressionGuardsBrokenError";
+		this.reason = {
+			code: "refusal.regression-guards-broken",
+			params: { broken: guards.broken.length, guarded: guards.guarded },
+			detail: guards.broken.join(", "),
+		};
+	}
 }
 
 /** Every eval run this promotion rests on, development and sealed alike. */
@@ -1135,7 +1168,7 @@ function assertJudgeCalibrated(
 			: "";
 		throw new Error(
 			`promotion refused: ${refusal}.${legacy}${unbound}${mismatched}${repeats}${conflicts} ` +
-				"Grade the judge before promoting: /label in Builder Pi, or `ahde label <evalRunId> --target <dir>` outside it.",
+				"Grade the judge before promoting: /label in Builder Pi.",
 		);
 	}
 }

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	closeSync,
-	existsSync,
 	fsyncSync,
 	linkSync,
 	lstatSync,
@@ -137,26 +136,29 @@ function verifyRealContainment(stateRoot: string, candidate: string, label: stri
 
 function stateLayout(stateRoot: string, projectId: string, create: boolean): string | null {
 	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
+	// Only ENOENT means no store yet; permission failures and broken links must not hide it.
+	let rootEntry = lstatSync(root, { throwIfNoEntry: false });
+	if (!rootEntry) {
 		if (!create) return null;
 		mkdirSync(root, { recursive: true, mode: 0o700 });
+		rootEntry = lstatSync(root);
 	}
-	const rootEntry = lstatSync(root);
 	if (!rootEntry.isDirectory()) throw new CorpusError(`stateRoot must be a directory: ${root}`);
 	const realRoot = realpathSync(root);
 
 	let current = root;
 	for (const segment of ["projects", validateProjectId(projectId), "corpora"]) {
 		const next = join(current, segment);
-		if (!existsSync(next)) {
+		let entry = lstatSync(next, { throwIfNoEntry: false });
+		if (!entry) {
 			if (!create) return null;
 			try {
 				mkdirSync(next, { mode: 0o700 });
 			} catch (error) {
 				if (!isNodeError(error, "EEXIST")) throw error;
 			}
+			entry = lstatSync(next);
 		}
-		const entry = lstatSync(next);
 		if (!entry.isDirectory() || entry.isSymbolicLink()) {
 			throw new CorpusError(`state layout component must be a regular directory: ${next}`);
 		}
@@ -420,10 +422,26 @@ export function listCorpora(options: ListCorporaOptions): CorpusMetadata[] {
 
 	const metadata: CorpusMetadata[] = [];
 	for (const entry of readdirSync(corporaRoot, { withFileTypes: true })) {
-		if (!entry.isDirectory() || !CORPUS_ID_PATTERN.test(entry.name)) continue;
+		if (!CORPUS_ID_PATTERN.test(entry.name)) continue;
 		metadata.push(readMetadata(corporaRoot, projectId, entry.name));
 	}
 	return metadata.sort((a, b) =>
 		a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : b.createdAt.localeCompare(a.createdAt),
 	);
+}
+
+/** Classify legacy evidence by metadata only; an incomplete inventory cannot establish visibility. */
+export function sealedDatasetHashesFor(options: ListCorporaOptions): Set<string> {
+	try {
+		return new Set(listCorpora(options)
+			.filter((corpus) => corpus.visibility === "sealed")
+			.map((corpus) => corpus.hash));
+	} catch (error) {
+		throw new CorpusError(
+			"Cannot determine sealed-data visibility: the corpus inventory is unreadable or corrupt. " +
+			"Restore the inventory or fix its permissions, then retry. Inventory: " +
+			join(resolve(options.stateRoot), "projects", options.projectId, "corpora"),
+			{ cause: error },
+		);
+	}
 }

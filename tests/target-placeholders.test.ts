@@ -406,7 +406,7 @@ describe("a template harness is not a configured agent", () => {
 		expect(harnessFilesOf(target.manifest)).toEqual(["prompts/**"]);
 		expect(target.tools.map((tool) => tool.descriptor.name)).toEqual(["create_ticket", "get_account"]);
 		expect(target.tasks).toHaveLength(8);
-		expect(target.tasks.filter((task) => task.world)).toHaveLength(4);
+		expect(target.tasks.filter((task) => task.world)).toHaveLength(5);
 		expect(target.tasks.filter((task) => task.simulatedUser)).toHaveLength(2);
 		expect(target.data.map((directory) => directory.path)).toEqual(["data/kb"]);
 		// It ships with placeholders like every template, so the first-run dialog

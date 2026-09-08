@@ -9,6 +9,8 @@ import {
 	formatResourceFragment,
 	judgeComparison,
 	promotableVerdicts,
+	REGRESSION_GUARDS_POLICY_ID,
+	regressionGuards,
 	resourceRatios,
 	resourceTotals,
 	sealedOutcome,
@@ -60,6 +62,25 @@ function rowsFromOutcomes(tasks: PairFixture["tasks"]): CompareRow[] {
 		};
 	});
 }
+
+describe("regression guards", () => {
+	it("guards every task the baseline passed each time, and breaks only on an every-time failure", () => {
+		const rows = rowsFromOutcomes([
+			{ taskId: "kept", baseline: ["pass", "pass", "pass"], candidate: ["pass", "pass", "pass"] },
+			{ taskId: "broken", baseline: ["pass", "pass", "pass"], candidate: ["fail", "fail", "fail"] },
+			// Flaky is a flag for a human, never a veto: the strict rule needs every repetition.
+			{ taskId: "flaky", baseline: ["pass", "pass", "pass"], candidate: ["pass", "fail", "fail"] },
+			// Never reliably held by the base, so nothing to guard.
+			{ taskId: "never-held", baseline: ["pass", "fail", "pass"], candidate: ["fail", "fail", "fail"] },
+			// Errors are excluded exactly as the gate excludes them (invariant 9).
+			{ taskId: "errored", baseline: ["pass", "pass", "pass"], candidate: ["error", "fail", "fail"] },
+		]);
+		expect(regressionGuards(rows, 3)).toEqual({ policy: REGRESSION_GUARDS_POLICY_ID, guarded: 3, broken: ["broken"] });
+		// Sorted by task id, so the evidence hashes the same whatever the row order was.
+		expect(regressionGuards([...rows].reverse(), 3).broken).toEqual(["broken"]);
+		expect(regressionGuards([], 3)).toEqual({ policy: REGRESSION_GUARDS_POLICY_ID, guarded: 0, broken: [] });
+	});
+});
 
 /**
  * A row whose grader scores are given directly. `aPass`/`bPass` still describe

@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cliHelp } from "../src/cli-help.js";
-import { SEALED_GATE_POLICY } from "../src/domain/comparison-gate.js";
 import {
 	AHDE_BUILDER_COMMAND_NAMES,
 	AHDE_BUILDER_COMMANDS,
@@ -124,7 +123,7 @@ describe("one Builder persona", () => {
 			expect(say).not.toContain(jargon);
 		}
 		const means = rows.map((row) => row.means).join("\n");
-		for (const jargon of ["Spec", "corpus", "Proposal", "candidate verification", "sealed holdout"]) {
+		for (const jargon of ["Spec", "corpus", "Proposal", "verify-candidate", "sealed holdout"]) {
 			expect(means).toContain(jargon);
 		}
 	});
@@ -165,8 +164,8 @@ describe("one Builder persona", () => {
 		expect(rules).toContain("about four changed files is the\n  ceiling");
 		expect(rules).toContain("At an equal verdict the smaller diff wins");
 		expect(rules).toContain("only deletes and\n  comes back flat is worth keeping");
-		expect(rules).toContain("A tie is a discard");
-		expect(rules).toContain("Never re-propose the same files for the same failure mode after a loss");
+		expect(rules).toContain("leaves the effect unresolved");
+		expect(rules).toContain("Do not blindly repeat a prior attempt");
 		expect(rules).toContain("**Loop discipline.**");
 		// The rule this one restates has to still be there to restate.
 		expect(persona).toContain("already tried");
@@ -175,8 +174,6 @@ describe("one Builder persona", () => {
 	it("names host-owned consequential actions without promising a fixed question count", () => {
 		const working = persona.split("## How to work with the operator")[1]?.split("\n## ")[0] ?? "";
 		expect(working).toContain("The host asks the consequential questions; their count follows the work");
-		expect(working).toContain("model experiments disclose exact models, executions and tolerance");
-		expect(working).toContain("model acceptance shows its exact diff");
 		expect(working).not.toContain("exactly three questions");
 		expect(working).toMatch(/\*\*start testing\*\*/);
 		expect(working).toMatch(/\*\*apply this change\*\*/);
@@ -193,203 +190,47 @@ describe("one Builder persona", () => {
 });
 
 describe("CLI help", () => {
-	it("keeps root help focused on the product journey", () => {
+	it("keeps root help to the eight product commands and sends the rest to the conversation", () => {
 		const help = cliHelp(["--help"]);
 		expect(help).toContain("continue this project's conversation");
 		expect(help).toContain("start a new Builder conversation");
 		expect(help).toContain("ahde resume");
+		expect(help).toContain("ahde target [--target <dir>]");
+		expect(help).toContain("ahde init <dir>");
+		expect(help).toContain("ahde validate --target <dir>                 local readiness check; no model call");
+		expect(help).toContain("ahde run --target <dir> [options]            run the development basket once");
+		expect(help).toContain("ahde evidence [--port N] [--project <id>]    open the read-only trace explorer");
+		expect(help).toContain("is asked for in the Builder conversation");
 		expect(help).toContain("Inside Builder Pi");
-		expect(help).toContain("Advanced automation commands");
-		expect(help).toContain("list  corpus  feedback  diagnose  regrade  report  label  candidate  calibrate");
-		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
-		// The screen has one subject and one form: an evaluated Candidate record.
-		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
 		expect(help).toContain("--project defaults to the Target's manifest id");
-		// The autoloop and its search are machine verbs: focused help only.
-		expect(help).not.toContain("ahde improve --target");
-		expect(help).not.toContain("ahde search --target");
-		expect(help).toContain("check  improve  search  review  promote  reject  log  watch  passport");
-		// The recorded dataset joins the pure reads at the end of the block, so
-		// the wrapping of every line above it is byte-for-byte what it was.
-		expect(help).toContain("log  watch  passport  export");
-		expect(help).toContain("ahde export --target <dir> --all             every emulated conversation as JSONL");
-		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
-	});
-
-	it("routes a two-word command's help however the operator ordered it", () => {
-		// The action can sit after a flag and its value; reading the first bare
-		// token would find `demo` and silently fall back to the root page.
-		for (const argv of [
-			["corpus", "list", "--help"],
-			["corpus", "--project", "demo", "list", "--help"],
-			["corpus", "--target", "./agent", "list"],
+		// Nothing that left the CLI is advertised, and asking for its help lands on the tour.
+		for (const retired of [
+			"candidate", "check", "calibrate", "improve", "search", "review", "promote", "reject",
+			"passport", "log", "export", "label", "regrade", "report", "diagnose", "corpus", "feedback", "tool", "list", "serve", "watch",
 		]) {
-			expect(cliHelp(argv)).toContain("Usage: ahde corpus list");
+			expect(help).not.toMatch(new RegExp(`^  ahde ${retired}\\b`, "m"));
+			expect(cliHelp([retired, "--help"])).toBe(help);
 		}
-		expect(cliHelp(["tool", "--target", "./agent", "try", "--help"]))
-			.toContain("Usage: ahde tool try");
-		// An unknown action still gets the product tour, not a wrong page.
-		expect(cliHelp(["corpus", "--project", "demo", "delete"])).toContain("Agent Harness Development Environment");
 	});
 
-	it("states the sealed floor where a sealed corpus is created", () => {
-		for (const command of [["corpus", "import"], ["corpus", "ingest"]]) {
-			expect(cliHelp(command)).toContain(String(SEALED_GATE_POLICY.minTasks));
-		}
-		expect(cliHelp(["corpus", "import"])).toContain(`${SEALED_GATE_POLICY.minRepetitions} repetitions`);
-		expect(cliHelp(["corpus", "import"])).toContain("promotion stays locked");
-	});
-
-	it("renders focused help for top-level commands", () => {
+	it("renders focused help for the commands that stay", () => {
 		expect(cliHelp(["run", "--help"])).toContain("Exit 0 = all pass");
 		expect(cliHelp(["init", "--help"])).toContain("first Git commit");
 		expect(cliHelp(["init", "--help"])).toContain("ahde init my-agent --template python-support");
 		expect(cliHelp(["init", "--help"])).toContain("pi-basic         minimal Pi harness (the default)");
 		// The engine store holds the sealed exam, so every command that writes
 		// into one says it refuses a Target that already committed it.
-		for (const command of ["init", "run", "candidate"]) {
+		for (const command of ["init", "run"]) {
 			expect(cliHelp([command, "--help"])).toMatch(/TRACKS\s+anything under \.ahde\/ or runs\//u);
 		}
 		expect(cliHelp(["target", "--help"])).toContain("Requires a configured Target");
-		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
-		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
-		const check = cliHelp(["check", "--help"]);
-		expect(check).toContain("Usage: ahde check --target <dir> --candidate <id>");
-		expect(check).not.toContain("--builder-run");
-		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
-		expect(check).toContain("It is a screen, never evidence.");
-		expect(check).toContain("promotion that cites one is refused");
-		expect(check).toContain("Exit 0 = promising, 1 = flat, 2 = the\nscreen could not run at all.");
-		const improve = cliHelp(["improve", "--help"]);
-		expect(improve).toContain("Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n>");
-		expect(improve).toContain("cheap check -> full development verification");
-		expect(improve).toContain("`90%` or `0.9`");
-		expect(improve).toContain("the sealed guardrail and the promotion are\nalways yours");
-		expect(improve).toContain("--candidates N (1..4, default 1) makes each cycle a search instead of one guess");
-		expect(improve).toContain("already ended rejected or not `improved`");
-		// Builder Pi authors bounded variants; the standalone command consumes
-		// prepared proposals. Neither path pretends every diff was shown first.
-		expect(improve).toContain("WHO AUTHORS THE PROPOSALS: Builder Pi can attach its bounded proposal author");
-		expect(improve).toContain("The standalone\n`ahde improve` command has no model host to author with");
-		expect(improve).toContain("WITHOUT showing you each diff");
-		expect(improve).toContain("`via: improvement-loop`");
-		expect(improve).toContain("WHICH PROPOSAL MATCHES");
-		expect(improve).toContain("Not\nthe id of an eval run");
-		expect(improve).not.toContain("--compound");
-		expect(improve).toContain("stops and hands back");
-		expect(improve).toContain("--resume <loopId> or drop the claim with --abandon <loopId>");
-		expect(improve).toContain("--baseline-max-age <ms> bounds evidence reuse");
-		const search = cliHelp(["search", "--help"]);
-		expect(search).toContain("Usage: ahde search --target <dir> --candidates <id,id,id>");
-		expect(search).toContain("Search, not one guess.");
-		expect(search).toContain("BOTH score delta and cost ratio and is strictly better on one of them");
-		expect(search).toContain("never reaches verification and is listed with that reason");
-		expect(search).toContain("Sealed verification is not part of a search.");
-		expect(search).toContain("never promotes, adopts, publishes, approves, or opens the holdout");
-		expect(improve).toContain("It never promotes, adopts, publishes a corpus or approves a Spec.");
-		const review = cliHelp(["review", "--help"]);
-		expect(review).toContain("call prints its exact diff and refuses to record the review");
-		expect(review).toContain("--proposal-hash");
-		const serve = cliHelp(["serve", "--help"]);
-		expect(serve).toContain("Usage: ahde serve --target <dir>");
-		expect(serve).toContain("transport for the\nsame human gate, never an exemption from it");
-		expect(serve).toContain("POST /v1/confirmations/<id>");
-		expect(serve).toContain("A wrong hash, an unknown id, a second answer, an expiry, and\nshutdown are each refusals.");
-		expect(serve).toContain("a body\nthat carries actor, actorId, approved, or confirmed is refused");
-		expect(serve).toContain("Binds 127.0.0.1 only.");
-		expect(serve).toContain("printed once to\nstderr");
-		expect(serve).toContain("--allow-concurrent");
-		const dataset = cliHelp(["export", "--help"]);
-		expect(dataset).toContain("Usage: ahde export [--target <dir>] [--project <id>]");
-		expect(dataset).toContain("(--run <run-id> | --eval <erun-id> | --all)");
-		expect(dataset).toContain("WHAT IT NEVER CONTAINS: sealed holdout anything.");
-		expect(dataset).toContain("read from the run's own workspace snapshot — never re-read from your current\ncheckout");
-		expect(dataset).toContain("read from the sidecars, never re-derived");
-		expect(dataset).toContain("Tool calls and their\nresults are already in `messages`; nothing repeats them.");
-		expect(dataset).toContain("A/A calibration arms are excluded unless --include-aa");
-		expect(dataset).toContain("Infrastructure errors are never exported");
-		expect(dataset).toContain("defaults to\n`<target>/exports/`");
-		const regrade = cliHelp(["regrade", "--help"]);
-		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
-		expect(regrade).toContain("without calling the\nTarget model again");
-		expect(regrade).toContain("the graders it carried when its trace was recorded");
-		expect(regrade).toContain("Sealed\nevidence stays sealed and prints counts only");
-	});
-
-	it("sends authoring and adoption to Builder Pi, and advertises no retired command", () => {
-		const help = cliHelp(["--help"]);
-		expect(help).toContain("Verify and ship (authoring and adoption live in Builder Pi):");
-		expect(help).toContain("log  watch  passport");
-		// The external CLI workflow is retired: the root page must not name it,
-		// and asking for its help must land on the product tour instead.
-		for (const retired of ["ahde spec approve", "ahde propose", "ahde apply", "ahde adopt"]) {
-			expect(help).not.toContain(retired);
-		}
-		for (const argv of [["spec", "approve"], ["propose"], ["apply"], ["adopt"]]) {
-			expect(cliHelp([...argv, "--help"])).toBe(help);
-		}
-	});
-
-	it("renders focused help for nested automation actions", () => {
-		expect(cliHelp(["corpus", "import", "--help"])).toContain("imports/ inbox");
-		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("--file imports/<file>");
-		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("a sealed row is never printed");
-		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("--recipe <json|@path>");
-		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("never a sealed row");
-		const synth = cliHelp(["corpus", "synth", "--help"]);
-		expect(synth).toContain("Usage: ahde corpus synth --target <dir>");
-		// Why the judge and not the Builder, said where an operator will read it.
-		expect(synth).toContain("configured JUDGE model");
-		expect(synth).toContain("never the Builder");
-		expect(synth).toContain("refused, exit 2");
-		expect(synth).toContain("never a case, a fragment of one");
-		expect(synth).toContain("--review <path> is the human path");
-		expect(synth).toContain("refused inside the Target tree");
-		expect(synth).toContain("No case content, ever.");
-	});
-
-	it("documents where a marked reply goes and how it becomes cases", () => {
-		expect(cliHelp(["--help"])).toContain("feedback");
-		expect(cliHelp(["feedback", "list", "--help"])).toContain("Usage: ahde feedback list");
 		expect(cliHelp(["target", "--help"])).toContain("imports/feedback.jsonl");
 		expect(cliHelp(["target", "--help"])).toContain("/bad [note]");
-		const list = cliHelp(["feedback", "list", "--help"]);
-		expect(list).toContain("imports/feedback.jsonl");
-		expect(list).toContain('"dialogue": { "column": "messages" }');
-		expect(list).toContain("Full transcripts stay in the file");
-		expect(cliHelp(["feedback", "clear", "--help"])).toContain("imports/feedback.<timestamp>.jsonl");
-	});
-
-	it("offers the growth log and the drift watch beside the loop commands", () => {
-		const help = cliHelp(["--help"]);
-		expect(help).toContain("ahde log --target <dir> [--project <id>]     the agent's growth, version by version");
-		expect(help).toContain("ahde watch --target <dir> [--every 1d]       the basket on a schedule; drift vs noise");
-		expect(help).toContain("log  watch");
-
-		const log = cliHelp(["log", "--help"]);
-		expect(log).toContain("Usage: ahde log --target <dir> [--project <id>] [--limit N] [--json]");
-		expect(log).toContain("One row per promotion, newest first");
-		expect(log).toContain("Rejections appear as dimmed rows");
-		expect(log).toContain("never evidence for one — per-task flips never decide a verdict");
-		expect(log).toContain("A sealed row carries a verdict and a size and nothing else");
-		expect(log).toContain("A pure read. No model call, nothing written");
-
-		const watch = cliHelp(["watch", "--help"]);
-		expect(watch).toContain("Usage: ahde watch --target <dir>");
-		expect(watch).toContain("the pair is an A/A\nexperiment and the honest verdict is `inconclusive`");
-		expect(watch).toContain("harness revision did not change");
-		expect(watch).toContain("watch does not invent a root cause from scores alone");
-		expect(watch).toContain("On an unchanged revision a gain is not a win.");
-		expect(watch).toContain("`noise not calibrated`");
-		expect(watch).toContain("nothing is promoted, adopted, or written as a receipt");
-		expect(watch).toContain("watch stores nothing new");
-		expect(watch).toContain("Exit 0 = healthy,\n3 = drift, 2 = no comparable baseline yet.");
-	});
-
-	it("no longer advertises the deleted one-shot adapter commands", () => {
-		const help = cliHelp(["--help"]);
-		expect(help).not.toContain("  builder  ");
-		expect(cliHelp(["corpus", "draft", "--help"])).toBe(help);
+		expect(cliHelp(["validate", "--help"])).toContain("without contacting the model provider");
+		expect(cliHelp(["run", "--help"])).toContain("Checking a change belongs to the Builder");
+		for (const command of ["builder-pi", "continue", "resume", "evidence"]) {
+			expect(cliHelp([command, "--help"])).toContain(`Usage: ahde ${command}`);
+		}
 	});
 });

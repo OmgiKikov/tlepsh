@@ -8,7 +8,7 @@
  * release authority. That promise used to be written twice, once per module,
  * with the same fifteen decision kinds and the same eighteen-line decorator —
  * and the two copies had already drifted: only the search branded its gate and
- * refused an unbranded one, so `ahde improve` ran with no gate at all.
+ * refused an unbranded one, so the loop ran with no gate at all.
  *
  * Here it is written once. A restriction is an id plus the one sentence the
  * operator is owed when the refusal reaches them; the id picks the brand, and
@@ -134,21 +134,4 @@ export function restrictedGate(gate: WorkbenchHumanGate, restriction: GateRestri
  */
 export function assertRestrictedGate(gate: WorkbenchHumanGate | undefined, restriction: GateRestrictionId): void {
 	if (gate && !(BRANDS[restriction] in gate)) throw new UnrestrictedGateError(restriction);
-}
-
-/**
- * The base gate for a run nobody is sitting at — `ahde improve` and `ahde
- * search` on a terminal that has already authorized the whole operation on the
- * command line. Invariant 16: a non-interactive call fails closed, so anything
- * that still asks a question gets a no rather than a silent yes.
- */
-export function unattendedGate(): WorkbenchHumanGate {
-	return {
-		async confirm() {
-			return { approved: false };
-		},
-		async selectSealed() {
-			return { approved: false };
-		},
-	};
 }

@@ -5,7 +5,6 @@ import type { AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-codin
 import type { ResolvedTarget } from "../manifest.js";
 import { hashFile, type TokenMetrics } from "../provenance.js";
 import { MAX_TRACE_ARTIFACT_BYTES, redactSensitiveText } from "../trace.js";
-import { resolveExecutionBackend } from "./container-backend.js";
 import {
 	AHDE_TOOL_HOME_ENVIRONMENT,
 	AHDE_WORLD_ENVIRONMENT,
@@ -168,7 +167,6 @@ class CommandTargetSession implements TargetSession {
 		private readonly options: CreateCommandTargetSessionOptions,
 		readonly agentEntryHash: string,
 		tools: readonly ToolDefinition<any, any, any>[],
-		private readonly teardown: { terminate?: () => void; dispose?: () => void },
 	) {
 		this.decoder = new AgentMessageDecoder(options.target.manifest.execution.command!.protocolVersion);
 		for (const tool of tools) this.tools.set(tool.name, tool);
@@ -448,12 +446,6 @@ class CommandTargetSession implements TargetSession {
 			});
 		}
 		this.killTree();
-		try {
-			this.teardown.terminate?.();
-		} catch {}
-		try {
-			this.teardown.dispose?.();
-		} catch {}
 	}
 
 	private killTree(): void {
@@ -554,10 +546,7 @@ export async function createCommandTargetSession(
 	const entry = resolveEntryExecutable(command.argv[0] as string, environment.PATH ?? "");
 	const agentEntryHash = hashFile(readFileSync(entry).toString("base64"));
 
-	const backend = options.sandboxBackend ?? resolveExecutionBackend({
-		policy: execution,
-		osBackend: () => detectTargetToolSandbox(options.workspaceDir, options.scratchDir),
-	}).backend;
+	const backend = options.sandboxBackend ?? detectTargetToolSandbox(options.workspaceDir, options.scratchDir);
 
 	// The child writes only where the manifest says the Target may write. A
 	// read-only harness is the default; `write`/`edit` in `execution.tools` is
@@ -584,18 +573,14 @@ export async function createCommandTargetSession(
 		confinement,
 		cwd: options.workspaceDir,
 		argv: [entry, ...command.argv.slice(1)],
-		...(execution.container ? { container: execution.container } : {}),
-		...(options.targetTools.toolHomeRoot ? { toolHomeRoot: options.targetTools.toolHomeRoot } : {}),
-		lifecycleTimeoutMs: command.startupTimeoutMs,
 	});
-	invocation.assertReady?.();
 
 	const child = spawn(invocation.executable, invocation.args, {
 		cwd: options.workspaceDir,
 		// Its own process group, so a timeout or an abort kills the whole tree
 		// and not just the shim the sandbox wrapped it in.
 		detached: process.platform !== "win32",
-		env: invocation.spawnEnvironment ?? environment,
+		env: environment,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
 	});
@@ -605,10 +590,7 @@ export async function createCommandTargetSession(
 
 	const writer = new SessionJsonlWriter(join(options.runDir, "session.jsonl"), MAX_TRACE_ARTIFACT_BYTES);
 	const tools = options.targetTools.customTools;
-	const session = new CommandTargetSession(child, writer, options, agentEntryHash, tools, {
-		...(invocation.terminate ? { terminate: invocation.terminate } : {}),
-		...(invocation.dispose ? { dispose: invocation.dispose } : {}),
-	});
+	const session = new CommandTargetSession(child, writer, options, agentEntryHash, tools);
 
 	// The one-time handshake. The credential travels by NAME; the value is
 	// already in the child's environment under exactly that name.

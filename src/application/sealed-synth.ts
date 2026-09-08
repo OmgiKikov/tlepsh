@@ -36,6 +36,7 @@ import {
 	type CorpusTask,
 } from "../corpus.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { CASE_DIFFICULTIES, coverageDensity } from "../domain/case-coverage.js";
 import {
 	finerGeometry,
 	KB_GEOMETRY,
@@ -47,7 +48,17 @@ import {
 } from "../domain/kb.js";
 import { knowledgeBaseDeclared, readKnowledgeBase, KB_DATA_DECLARATION } from "../target/kb-tool.js";
 import { callEvaluatorModel, evaluatorCostUsd } from "../evaluator-model.js";
-import { loadTarget, taskDialogueIssue, type GraderSpec, type ResolvedTarget } from "../manifest.js";
+import {
+	CaseCoverageSchema,
+	CaseDifficultySchema,
+	GraderSpec,
+	loadTarget,
+	taskDialogueIssue,
+	type CaseCoverage,
+	type CaseDifficulty,
+	type ResolvedTarget,
+	isDeterministicGrader,
+} from "../manifest.js";
 import {
 	canonicalJson,
 	HashSchema,
@@ -59,6 +70,14 @@ import {
 import { AgentSpecSchema, listSpecSnapshots, type AgentSpec } from "../spec.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../storage/artifacts.js";
 import { plural, t } from "../i18n.js";
+import {
+	CRITIC_SYSTEM,
+	critiqueCases,
+	specTextOf,
+	type CriticCase,
+	type CriticFinding,
+	CRITIC_BATCH_SIZE,
+} from "./case-critic.js";
 import { sameModelAsTarget } from "./configure-evaluators.js";
 import { contained, projectStateDir } from "../storage/paths.js";
 
@@ -88,6 +107,80 @@ const MAX_GENERATOR_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_GRADER_SHAPES = 16;
 const RECEIPT_DIRECTORY = "sealed-synth";
 const EXCHANGE_DIRECTORY = "exchanges";
+/**
+ * Jobs the exam is spread over. A Spec with more jobs than this is a Spec whose
+ * cells nobody could fill in one exam anyway, and the prompt stays readable.
+ */
+const MAX_COVERAGE_JOBS = 24;
+/**
+ * Cases per critic call. Fixed here rather than inherited so the plan's
+ * arithmetic — one call per eight accepted cases — is the arithmetic the run
+ * actually pays for.
+ */
+/** One question of every third passage asks about something it does not state. */
+const KB_NO_ANSWER_EVERY = 3;
+
+
+/**
+ * Why a generated case did not reach the sealed exam, as a closed vocabulary.
+ *
+ * The critic answers in prose, and its prose may quote the case it is talking
+ * about. A receipt that carried it would be a second copy of the exam in the
+ * one file every screen is allowed to read, so what survives is a category:
+ * derived from the verdict and a keyword rule, and never the text itself.
+ */
+export const SEALED_SYNTH_DROP_CATEGORIES = [
+	"unanswerable",
+	"ambiguous-criteria",
+	"contradiction",
+	"wrong-check",
+	"duplicate",
+	"out-of-actions",
+	"judge-only",
+	"unreviewed",
+	"other",
+] as const;
+const DropCategorySchema = z.enum(SEALED_SYNTH_DROP_CATEGORIES);
+export type SealedSynthDropCategory = z.infer<typeof DropCategorySchema>;
+export type SealedSynthDropCounts = Record<SealedSynthDropCategory, number>;
+
+function emptyDropCounts(): SealedSynthDropCounts {
+	return Object.fromEntries(SEALED_SYNTH_DROP_CATEGORIES.map((category) => [category, 0])) as SealedSynthDropCounts;
+}
+
+/**
+ * The category behind one finding, by the first rule that matches.
+ *
+ * Order is the whole design: a reason that names both a duplicate and a wrong
+ * check is reported as a duplicate, because that is the fact that decides what
+ * to do about it. Both languages the dictionary speaks are matched — the judge
+ * answers in the language of the Spec it read.
+ */
+const DROP_CATEGORY_RULES: readonly { category: SealedSynthDropCategory; pattern: RegExp }[] = [
+	{ category: "duplicate", pattern: /duplicat|near-duplicate|same question|already asked|reworded|дублик|повтор/u },
+	{ category: "contradiction", pattern: /contradict|conflict|inconsistent|disagree|противореч|не согласуется/u },
+	{ category: "out-of-actions", pattern: /out of scope|outside .{0,40}allowed|not allowed|allowed actions|no declared tool|tool does not exist|вне (области|допустимых)|не разрешено/u },
+	{ category: "ambiguous-criteria", pattern: /ambigu|two reasonable|more than one correct|unclear criteri|underspecified criteri|неоднознач|неясн/u },
+	{ category: "unanswerable", pattern: /cannot be (solved|answered)|not answerable|unanswerable|no answer|does not (state|hold|contain|say)|source does not|passage does not|не содержит|нет ответа|не сказано/u },
+	{ category: "wrong-check", pattern: /grader|check|output_contains|output_excludes|output_matches|tool_called|world_state|expected|reference answer|грейдер|проверк|эталон/u },
+];
+
+function dropCategory(finding: CriticFinding): SealedSynthDropCategory {
+	if (finding.verdict === "unreviewed") return "unreviewed";
+	const reasons = finding.reasons.join(" ").toLowerCase();
+	for (const rule of DROP_CATEGORY_RULES) {
+		if (rule.pattern.test(reasons)) return rule.category;
+	}
+	return "other";
+}
+
+/** `wrong-check 2, unanswerable 1` — the only thing a warning may say about why. */
+function dropReasonList(counts: SealedSynthDropCounts): string {
+	return SEALED_SYNTH_DROP_CATEGORIES
+		.filter((category) => counts[category] > 0)
+		.map((category) => `${category} ${counts[category]}`)
+		.join(", ");
+}
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const CorpusIdSchema = z.string().regex(/^corpus-[0-9a-f]{64}$/);
@@ -208,10 +301,70 @@ const SealedSynthReceiptV3Schema = z.strictObject({
 	kbChunkChars: z.number().int().positive().nullable(),
 });
 
+/** One cell of the basket, and how many cases it holds. A count, never a case. */
+const CoverageCellSchema = z.strictObject({
+	job: z.string().min(1).max(200),
+	difficulty: CaseDifficultySchema,
+	cases: z.number().int().positive(),
+});
+export type SealedSynthCoverageCell = z.infer<typeof CoverageCellSchema>;
+
+/**
+ * What the exam was asked to cover and what it covers.
+ *
+ * `plan` is the cell-by-cell request the prompt carried; `achieved` is
+ * {@link coverageDensity} over the cases that survived, as counts. Job names
+ * come from the Spec — a document the Builder has already read — and every
+ * label the generator wrote was checked against that list before it was kept,
+ * so nothing here is text a model chose.
+ */
+const SealedSynthCoverageSchema = z.strictObject({
+	jobs: z.array(z.string().min(1).max(200)).max(MAX_COVERAGE_JOBS),
+	plan: z.array(CoverageCellSchema).max(MAX_SEALED_SYNTH_CASES),
+	achieved: z.array(CoverageCellSchema).max(MAX_SEALED_SYNTH_CASES),
+	/** Accepted cases carrying no cell label at all. */
+	unlabelled: z.number().int().nonnegative(),
+	/** Labels the host refused — an unknown job or difficulty. The case stayed. */
+	droppedLabel: z.number().int().nonnegative(),
+});
+export type SealedSynthCoverage = z.infer<typeof SealedSynthCoverageSchema>;
+
+/** What the critic read, what it cost, and — in categories — what it cost the exam. */
+const SealedSynthCriticSchema = z.strictObject({
+	reviewed: z.number().int().nonnegative(),
+	dropped: z.number().int().nonnegative(),
+	byCategory: z.record(DropCategorySchema, z.number().int().nonnegative()),
+	spend: z.strictObject({
+		calls: z.number().int().nonnegative(),
+		tokens: z.number().int().nonnegative(),
+		costUsd: z.number().nonnegative(),
+	}),
+});
+export type SealedSynthCritic = z.infer<typeof SealedSynthCriticSchema>;
+
+/**
+ * Version 4 adds the two facts that make a generated exam readable as a basket
+ * rather than a pile: which cells it was asked to fill and which it fills, and
+ * what the critic did to it before it was sealed. `critic` is optional because
+ * a review draft nobody sealed may carry no verdicts, and because a critic that
+ * could not be asked is a fact of its own, recorded as `unreviewed` findings
+ * rather than as a missing block.
+ */
+const SealedSynthReceiptV4Schema = z.strictObject({
+	schemaVersion: z.literal(4),
+	...SealedSynthReceiptFields,
+	source: z.enum(["spec", "kb"]),
+	kbIndexHash: HashSchema.nullable(),
+	kbChunkChars: z.number().int().positive().nullable(),
+	coverage: SealedSynthCoverageSchema,
+	critic: SealedSynthCriticSchema.optional(),
+});
+
 const SealedSynthReceiptSchema = z.discriminatedUnion("schemaVersion", [
 	SealedSynthReceiptV1Schema,
 	SealedSynthReceiptV2Schema,
 	SealedSynthReceiptV3Schema,
+	SealedSynthReceiptV4Schema,
 ]);
 export type SealedSynthReceipt = z.infer<typeof SealedSynthReceiptSchema>;
 
@@ -301,6 +454,18 @@ export interface SealedSynthPlan {
 	reviewPath: string | null;
 	/** From the judge's declared rates. An estimate, and named as one. */
 	estimatedCostUsd: number;
+	/**
+	 * The cells the generator will be asked to fill, in prompt order. Empty on
+	 * the knowledge-base source, where the passages decide what is asked.
+	 *
+	 * Optional only so a host that stubs this plan need not restate it; every
+	 * real plan carries it.
+	 */
+	coverageCells: SealedSynthCoverageCell[];
+	/** The Spec's jobs the cells were built from, verbatim. */
+	coverageJobs: string[];
+	/** Judge calls the critic adds: one per {@link CRITIC_BATCH_SIZE} cases. */
+	criticCalls: number;
 }
 
 export interface SealedSynthResult {
@@ -325,6 +490,15 @@ export interface SealedSynthResult {
 	accepted: number;
 	droppedMalformed: number;
 	droppedDuplicate: number;
+	/** Which cells were asked for and which the exam fills. Counts only. */
+	coverage: SealedSynthCoverage;
+	/** What the critic read and what it removed, in categories. Null when it was never asked. */
+	critic: SealedSynthCritic | null;
+	/**
+	 * Where the critic's verdicts landed beside a draft, when it flagged
+	 * anything. A path: the file names cases by id and says nothing else.
+	 */
+	criticAnnotationsPath: string | null;
 }
 
 // ---------- state layout ----------
@@ -392,24 +566,79 @@ interface ResolvedSpec {
 	text: string;
 	source: SealedSynthReceipt["specSource"];
 	specId: string | null;
+	/** The Spec's jobs, verbatim: the rows of the coverage matrix. */
+	jobs: string[];
+	/**
+	 * The approved snapshot behind the text, when there is one. The critic reads
+	 * a Spec written its own way, and only this path can give it one.
+	 */
+	approved: AgentSpec | null;
+}
+
+/**
+ * The jobs a hand-written Spec lists.
+ *
+ * `renderApprovedSpec` writes `## Jobs` with one dash-item per job, and a Spec a
+ * human wrote by hand follows the same shape — it is the shape the Builder asks
+ * for. Anything else answers no jobs, and an exam with no jobs is simply asked
+ * for no cell labels rather than asked for invented ones.
+ */
+function jobsFromMarkdown(text: string): string[] {
+	const heading = /^#{1,6}\s+(.+?)\s*$/u;
+	const jobsHeading = /^(jobs|задачи)$/iu;
+	const item = /^\s*[-*]\s+(.*\S)\s*$/u;
+	const jobs: string[] = [];
+	let inside = false;
+	for (const line of text.split(/\r?\n/u)) {
+		const title = heading.exec(line);
+		if (title?.[1] !== undefined) {
+			inside = jobsHeading.test(title[1].trim());
+			continue;
+		}
+		if (!inside) continue;
+		const listed = item.exec(line);
+		if (listed?.[1] !== undefined) jobs.push(listed[1].trim());
+	}
+	return jobs;
+}
+
+/** Jobs a case could actually be labelled with: unique, in Spec order, and a valid label. */
+function usableJobs(jobs: readonly string[]): string[] {
+	const seen = new Set<string>();
+	const usable: string[] = [];
+	for (const job of jobs) {
+		const label = job.trim();
+		// A job too long to be a `coverage.job` could never come back as a label,
+		// so offering it as a cell would only ever produce refused labels.
+		if (!CaseCoverageSchema.shape.job.safeParse(label).success || seen.has(label)) continue;
+		seen.add(label);
+		usable.push(label);
+		if (usable.length >= MAX_COVERAGE_JOBS) break;
+	}
+	return usable;
 }
 
 function resolveSpec(options: SealedSynthOptions, target: ResolvedTarget): ResolvedSpec {
 	if (options.specPath !== undefined) {
-		return { text: readSpecFile(options.specPath, "the --from Spec file"), source: "from-file", specId: null };
+		const text = readSpecFile(options.specPath, "the --from Spec file");
+		return { text, source: "from-file", specId: null, jobs: usableJobs(jobsFromMarkdown(text)), approved: null };
 	}
 	const inTarget = join(target.dir, "spec.md");
 	if (existsSync(inTarget)) {
-		return { text: readSpecFile(inTarget, "the Target's spec.md"), source: "target-spec-md", specId: null };
+		const text = readSpecFile(inTarget, "the Target's spec.md");
+		return { text, source: "target-spec-md", specId: null, jobs: usableJobs(jobsFromMarkdown(text)), approved: null };
 	}
 	const approved = listSpecSnapshots(options.stateRoot, options.projectId)
 		.filter((snapshot) => snapshot.status === "approved");
 	const newest = approved[0];
 	if (newest) {
+		const spec = AgentSpecSchema.parse(newest.spec);
 		return {
-			text: renderApprovedSpec(AgentSpecSchema.parse(newest.spec)),
+			text: renderApprovedSpec(spec),
 			source: "approved-spec",
 			specId: newest.id,
+			jobs: usableJobs(spec.jobs),
+			approved: spec,
 		};
 	}
 	throw new SealedSynthRefusal(
@@ -475,7 +704,70 @@ function graderShapes(target: ResolvedTarget): string[] {
 			if (!shapes.has(key)) shapes.set(key, grader);
 		}
 	}
-	return [...shapes.keys()].sort().slice(0, MAX_GRADER_SHAPES);
+	const listed = [...shapes.entries()].sort(([left], [right]) => left.localeCompare(right)).slice(0, MAX_GRADER_SHAPES);
+	// The two shapes a trap is written with, whenever the development suite does
+	// not already show them. "Only the shapes shown" is a hard rule in the
+	// prompt, so a generator asked for a policy-trap with no `output_excludes`
+	// on the list has been asked for two contradictory things.
+	const shownTypes = new Set(listed.map(([, grader]) => grader.type));
+	const trapShapes = (["output_contains", "output_excludes"] as const)
+		.filter((type) => !shownTypes.has(type))
+		.map((type) => canonicalJson(GraderSpec.parse({ type, text: "…" })));
+	return [...listed.map(([shape]) => shape), ...trapShapes];
+}
+
+// ---------- the coverage matrix ----------
+
+function greatestCommonDivisor(left: number, right: number): number {
+	return right === 0 ? left : greatestCommonDivisor(right, left % right);
+}
+
+/**
+ * The cells of the matrix, in the order the exam should fill them.
+ *
+ * Cell k is job `k mod jobs` and difficulty `k mod 6` — the diagonal, which
+ * is what makes the first few cases already touch every job and every
+ * difficulty rather than six variations of the first job. The diagonal alone
+ * repeats after `lcm(jobs, 6)` steps and would never reach the other cells when
+ * the two numbers share a factor, so each further lap shifts the difficulty by
+ * one. Over the whole run that visits every cell exactly once: within a lap the
+ * pairs are those whose indices agree modulo `gcd`, and the shift walks the
+ * `gcd` classes.
+ */
+function coverageCells(jobs: readonly string[]): { job: string; difficulty: CaseDifficulty }[] {
+	if (jobs.length === 0) return [];
+	const laps = greatestCommonDivisor(jobs.length, CASE_DIFFICULTIES.length);
+	const lap = (jobs.length * CASE_DIFFICULTIES.length) / laps;
+	return Array.from({ length: jobs.length * CASE_DIFFICULTIES.length }, (_unused, index) => ({
+		job: jobs[index % jobs.length]!,
+		difficulty: CASE_DIFFICULTIES[(index + Math.floor(index / lap)) % CASE_DIFFICULTIES.length]!,
+	}));
+}
+
+/**
+ * How the N cases are asked to spread over the matrix: every cell once before
+ * any cell twice, so "every job and every difficulty at least once when N
+ * allows, the rest evenly" is arithmetic rather than a hope about the model.
+ */
+export function sealedSynthCoveragePlan(jobs: readonly string[], count: number): SealedSynthCoverageCell[] {
+	const cells = coverageCells(jobs);
+	if (cells.length === 0) return [];
+	const planned: SealedSynthCoverageCell[] = cells.map((cell) => ({ ...cell, cases: 0 }));
+	for (let index = 0; index < count; index += 1) planned[index % planned.length]!.cases += 1;
+	return planned.filter((cell) => cell.cases > 0);
+}
+
+/** The density as cells with counts, in job order then difficulty order. */
+function achievedCells(tasks: readonly CorpusTask[], jobs: readonly string[]): SealedSynthCoverageCell[] {
+	const density = coverageDensity(tasks, jobs);
+	const cells: SealedSynthCoverageCell[] = [];
+	for (const row of density.jobs) {
+		for (const difficulty of CASE_DIFFICULTIES) {
+			const cases = row.byDifficulty[difficulty];
+			if (cases > 0) cells.push({ job: row.job, difficulty, cases });
+		}
+	}
+	return cells;
 }
 
 // ---------- the prompt ----------
@@ -485,29 +777,84 @@ const GENERATOR_SYSTEM = [
 	"",
 	"The cases you write become a SEALED exam: no one improving the agent will",
 	"ever read them, so they must stand on their own. You are given the agent's",
-	"specification, a few existing cases as a FORMAT example only, and the grader",
-	"shapes the suite uses.",
+	"specification, the cells of the coverage matrix to fill, a few existing cases",
+	"as a FORMAT example only, and the grader shapes the suite uses.",
+	"",
+	"Decide the outcome and the checks BEFORE you write the request. For each case",
+	"settle first what a correct answer must contain, what it must not contain, and",
+	"what the agent has to do; then write the request those checks belong to. A",
+	"request written first and checked afterwards measures whatever the answer",
+	"happened to say.",
 	"",
 	"Rules:",
 	"- Answer with one JSON object and nothing else: {\"cases\": [ ... ]}.",
 	"- No prose, no explanation, no markdown fence, no commentary.",
-	"- Each case is an object with \"input\" (the request a real user would send),",
-	"  an optional \"expected\" (a reference answer, only when a grader compares",
-	"  against one), and \"graders\": a non-empty array using ONLY the grader",
-	"  shapes shown. Do not invent grader types.",
+	"- Each case is an object whose keys come in this order:",
+	"  {\"coverage\": {\"job\": \"<one job, verbatim>\", \"difficulty\": \"<one difficulty>\"},",
+	"   \"checks\": {\"graders\": [...], \"expected\": \"<reference answer>\", \"world\": {...}},",
+	"   \"input\": \"<the request a real user would send>\"}",
+	"  Write \"expected\" only when a grader compares against a reference answer, and",
+	"  \"world\" only when the format examples show a case that happens in a state.",
+	"- \"graders\" is a non-empty array using ONLY the grader shapes shown, and at",
+	"  least one of them must be a deterministic check: output_contains,",
+	"  output_excludes, output_matches, tool_called, exact or turn_budget. A case",
+	"  only a model can mark is not a measurement, and it is dropped.",
 	"- Never emit an \"id\": the host assigns ids.",
 	"- Every case must be NEW. Do not restate, paraphrase, translate, or lightly",
 	"  edit an example. An example is a format sample, never a subject.",
-	"- Spread the cases across the specification's jobs, inputs, and constraints,",
-	"  including the awkward ones: ambiguity, missing information, out-of-scope",
-	"  requests, and edge cases a careless agent would get wrong.",
+	"- Label every case with the cell it fills and fill the cells you are asked for:",
+	"  the job exactly as it is listed, the difficulty one of direct, clarify, tool,",
+	"  policy-trap, out-of-scope, no-answer.",
+	"",
+	"The six difficulties:",
+	"- direct: the specification answers it and the agent applies it.",
+	"- clarify: the request is ambiguous ON PURPOSE. The right behaviour is a",
+	"  clarifying question, and the checks describe that question rather than an",
+	"  answer the agent could not yet know.",
+	"- tool: the agent has to take an allowed action to get there.",
+	"- policy-trap: the request asserts a plausible WRONG rule the specification",
+	"  contradicts (\"as always, you refund within 60 days\"). The checks name the",
+	"  right value with output_contains AND exclude the wrong one with",
+	"  output_excludes.",
+	"- out-of-scope: the request is outside what the agent may do. It must decline",
+	"  or redirect, and the checks exclude the invented fulfilment.",
+	"- no-answer: the specification does not hold the answer. The agent must say so,",
+	"  and output_excludes names the value it must not invent.",
+	"",
 	"- Write inputs in the same language and register as the examples.",
 ].join("\n");
+
+/** The cells, spelled out for the generator: the rows, the columns, the counts. */
+function coveragePromptLines(jobs: readonly string[], cells: readonly SealedSynthCoverageCell[]): string[] {
+	if (jobs.length === 0 || cells.length === 0) {
+		// A Spec with no jobs has no rows, and a label against a job nobody
+		// declared would be refused on arrival. Asking for none is the honest ask.
+		return [
+			"# Coverage",
+			"",
+			"This specification lists no jobs, so write no \"coverage\" label.",
+			"Still spread the cases over the six difficulties, traps included.",
+			"",
+		];
+	}
+	return [
+		"# Coverage cells to fill",
+		"",
+		"Jobs (use one of these, verbatim, as \"coverage\".\"job\"):",
+		...jobs.map((job) => `- ${job}`),
+		"",
+		"Write this many cases in each cell:",
+		...cells.map((cell) => `- ${cell.job} × ${cell.difficulty}: ${cell.cases}`),
+		"",
+	];
+}
 
 function generatorUserPrompt(input: {
 	specText: string;
 	examples: readonly CorpusTask[];
 	graderShapes: readonly string[];
+	jobs: readonly string[];
+	cells: readonly SealedSynthCoverageCell[];
 	count: number;
 }): string {
 	const lines = [
@@ -515,6 +862,7 @@ function generatorUserPrompt(input: {
 		"",
 		input.specText.trim(),
 		"",
+		...coveragePromptLines(input.jobs, input.cells),
 		"# Grader shapes used by this suite",
 		"",
 		...input.graderShapes.map((shape) => shape),
@@ -532,7 +880,7 @@ function generatorUserPrompt(input: {
 		"# Task",
 		"",
 		`Write exactly ${input.count} new cases for this specification.`,
-		"Return only {\"cases\": [ ... ]}.",
+		"Checks first, then the request. Return only {\"cases\": [ ... ]}.",
 	);
 	return lines.join("\n");
 }
@@ -571,9 +919,19 @@ const KB_GENERATOR_SYSTEM = [
 	"- The answer is short, factual, and uses the passage's own numbers, names and",
 	"  terms exactly as written.",
 	"- Write both in the language of the passage.",
+	"",
+	"Some passages are also asked for one NO-ANSWER question. That one is a",
+	"question a user would plausibly ask about this subject and the passage does",
+	"NOT answer — a neighbouring fact it never states. You give it as",
+	"  \"noAnswer\": {\"question\": \"...\", \"invented\": \"...\"}",
+	"where \"invented\" is the single most likely value someone would make up for",
+	"it (a price, a deadline, a name), written the way it would appear in an",
+	"answer. The agent is supposed to say the documents do not cover it; the",
+	"invented value is what it must never state. Do not put the no-answer question",
+	"in \"questions\".",
 ].join("\n");
 
-function kbGeneratorUserPrompt(passage: KbPassage, questions: number): string {
+function kbGeneratorUserPrompt(passage: KbPassage, questions: number, noAnswer: boolean): string {
 	return [
 		`# Passage ${passage.id}`,
 		"",
@@ -582,7 +940,14 @@ function kbGeneratorUserPrompt(passage: KbPassage, questions: number): string {
 		"# Task",
 		"",
 		`Write ${questions} different question(s) and their answers from this passage.`,
-		"Return only {\"questions\": [{\"question\": \"...\", \"answer\": \"...\"}]}.",
+		...(noAnswer
+			? [
+				"Then add one no-answer question about something this passage does not",
+				"state, with the value a careless answer would invent for it.",
+				"Return only {\"questions\": [{\"question\": \"...\", \"answer\": \"...\"}], " +
+					"\"noAnswer\": {\"question\": \"...\", \"invented\": \"...\"}}.",
+			]
+			: ["Return only {\"questions\": [{\"question\": \"...\", \"answer\": \"...\"}]}."]),
 	].join("\n");
 }
 
@@ -640,27 +1005,43 @@ function readPair(value: unknown): { question: string; answer: string } | null {
 	return { question, answer };
 }
 
+/** The no-answer question and the value it must not be answered with. */
+function readNoAnswer(value: unknown): { question: string; invented: string } | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const { question, invented } = value as { question?: unknown; invented?: unknown };
+	if (typeof question !== "string" || question.trim().length === 0) return null;
+	if (typeof invented !== "string" || invented.trim().length === 0) return null;
+	return { question, invented };
+}
+
+interface KbReply {
+	pairs: { question: string; answer: string }[];
+	noAnswer: { question: string; invented: string } | null;
+}
+
 /**
- * The questions one knowledge-base call is allowed to return, at most `limit`.
+ * The questions one knowledge-base call is allowed to return, at most `limit`,
+ * plus the no-answer question when one was asked for.
  *
  * Both shapes are read: `{ "questions": [ ... ] }` is what the prompt asks for,
  * and a bare `{ "question", "answer" }` is one question written the older way —
  * a generator that answers a request for one question with one question has
  * done what was asked, and refusing its shape would throw a paid case away.
  */
-function parseGeneratedPairs(text: string, limit: number): { question: string; answer: string }[] {
-	if (Buffer.byteLength(text, "utf8") > MAX_GENERATOR_RESPONSE_BYTES) return [];
+function parseKbReply(text: string, limit: number): KbReply {
+	const empty: KbReply = { pairs: [], noAnswer: null };
+	if (Buffer.byteLength(text, "utf8") > MAX_GENERATOR_RESPONSE_BYTES) return empty;
 	const stripped = text.replace(/```(?:json)?/g, "").trim();
 	const start = stripped.indexOf("{");
 	const end = stripped.lastIndexOf("}");
-	if (start < 0 || end <= start) return [];
+	if (start < 0 || end <= start) return empty;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(stripped.slice(start, end + 1));
 	} catch {
-		return [];
+		return empty;
 	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return empty;
 	const listed = (parsed as { questions?: unknown }).questions;
 	const values = Array.isArray(listed) ? listed : [parsed];
 	const pairs: { question: string; answer: string }[] = [];
@@ -669,7 +1050,7 @@ function parseGeneratedPairs(text: string, limit: number): { question: string; a
 		const pair = readPair(value);
 		if (pair) pairs.push(pair);
 	}
-	return pairs;
+	return { pairs, noAnswer: readNoAnswer((parsed as { noAnswer?: unknown }).noAnswer) };
 }
 
 /**
@@ -687,6 +1068,18 @@ function kbCaseGraders(chunkId: string): GraderSpec[] {
 		{ type: "cites_source", chunk: chunkId, minOverlap: 0.35 },
 		{ type: "similarity", metric: "token-f1", threshold: 0.5 },
 	];
+}
+
+/**
+ * The graders a no-answer case carries: the one thing the answer must not say.
+ *
+ * There is no `cites_source` and no reference answer, because the passage holds
+ * neither — the whole case is that it does not. What can be checked without a
+ * model is that the invented value never appears, and that is what a hallucinating
+ * agent produces.
+ */
+function kbNoAnswerGraders(invented: string): GraderSpec[] {
+	return [{ type: "output_excludes", text: invented, caseSensitive: false }];
 }
 
 /**
@@ -787,35 +1180,102 @@ function parseGeneratedCases(text: string): unknown[] {
 	return cases;
 }
 
+/**
+ * One case the generator wrote, with the passage it was written from when there
+ * is one. The passage travels with the case so the critic can be shown the
+ * source it is supposed to check the case against.
+ */
+interface GeneratedCandidate {
+	value: unknown;
+	cited: { label: string; text: string } | null;
+}
+
+/** An admitted case and the source it cites, still paired. */
+interface AdmittedCase {
+	task: CorpusTask;
+	cited: { label: string; text: string } | null;
+}
+
 interface AdmittedCases {
-	tasks: CorpusTask[];
+	cases: AdmittedCase[];
 	droppedMalformed: number;
 	droppedDuplicate: number;
+	/** Cases with nothing but a judge grader behind them. */
+	droppedJudgeOnly: number;
+	/** Labels the host refused; the case itself was kept. */
+	droppedLabel: number;
+}
+
+/**
+ * The checks-first shape, flattened.
+ *
+ * The prompt asks for `{ coverage, checks: { graders, world, expected }, input }`
+ * so the model settles the outcome before it writes the request. The task shape
+ * on disk is flat, and the older flat reply is still a correct answer to an
+ * older prompt, so both are read and neither is privileged.
+ */
+function flattenChecks(value: Record<string, unknown>): Record<string, unknown> {
+	const { checks, ...rest } = value;
+	if (typeof checks !== "object" || checks === null || Array.isArray(checks)) return rest;
+	const { graders, world, expected } = checks as Record<string, unknown>;
+	return {
+		...rest,
+		...(graders !== undefined ? { graders } : {}),
+		...(world !== undefined ? { world } : {}),
+		...(expected !== undefined ? { expected } : {}),
+	};
+}
+
+/** Whether anything but a model's opinion decides this case. */
+function hasDeterministicCheck(task: CorpusTask): boolean {
+	if (task.graders.some(isDeterministicGrader)) return true;
+	return (task.world?.expect?.length ?? 0) > 0;
+}
+
+/**
+ * The cell label, when the generator wrote one the Spec can confirm.
+ *
+ * An unknown job or an unknown difficulty costs the label, never the case: the
+ * case is a case whatever it is filed under, and a label nobody declared would
+ * put a row in the matrix that the Spec does not have.
+ */
+function admittedCoverage(value: unknown, jobs: ReadonlySet<string>): CaseCoverage | null {
+	if (value === undefined) return null;
+	const parsed = CaseCoverageSchema.safeParse(value);
+	if (!parsed.success || !jobs.has(parsed.data.job)) return null;
+	return parsed.data;
 }
 
 /**
  * Validate, deduplicate, and re-id. Ids are derived from the Spec hash and the
  * normalized input — never taken from the generator — for the same reason a
  * corpus import derives them: an id a model chose is an id a model controls.
+ * `source` is stamped here for the same reason: provenance a model could write
+ * is provenance a model could forge.
  */
 function admitCases(
-	values: readonly unknown[],
+	candidates: readonly GeneratedCandidate[],
 	specSha256: string,
 	seenNormalized: ReadonlySet<string>,
 	limit: number,
+	jobs: readonly string[],
 ): AdmittedCases {
-	const tasks: CorpusTask[] = [];
+	const cases: AdmittedCase[] = [];
 	const seen = new Set(seenNormalized);
+	const knownJobs = new Set(jobs);
 	let droppedMalformed = 0;
 	let droppedDuplicate = 0;
+	let droppedJudgeOnly = 0;
+	let droppedLabel = 0;
 
-	for (const value of values) {
-		if (tasks.length >= limit) break;
+	for (const candidate of candidates) {
+		if (cases.length >= limit) break;
+		const value = candidate.value;
 		if (typeof value !== "object" || value === null || Array.isArray(value)) {
 			droppedMalformed += 1;
 			continue;
 		}
-		const { id: _id, ...rest } = value as Record<string, unknown>;
+		const { id: _id, source: _source, coverage, ...rest } = flattenChecks(value as Record<string, unknown>);
 		const input = (rest as { input?: unknown }).input;
 		if (typeof input !== "string" || input.trim().length === 0) {
 			droppedMalformed += 1;
@@ -826,15 +1286,55 @@ function admitCases(
 			droppedDuplicate += 1;
 			continue;
 		}
-		const candidate = CorpusTaskSchema.safeParse({ ...rest, id: derivedCaseId(specSha256, normalized) });
-		if (!candidate.success || taskDialogueIssue(candidate.data) !== null) {
+		const label = admittedCoverage(coverage, knownJobs);
+		const parsed = CorpusTaskSchema.safeParse({
+			...rest,
+			...(label ? { coverage: label } : {}),
+			source: { kind: "generated", generator: "judge" },
+			id: derivedCaseId(specSha256, normalized),
+		});
+		if (!parsed.success || taskDialogueIssue(parsed.data) !== null) {
 			droppedMalformed += 1;
 			continue;
 		}
+		if (!hasDeterministicCheck(parsed.data)) {
+			droppedJudgeOnly += 1;
+			continue;
+		}
 		seen.add(normalized);
-		tasks.push(candidate.data);
+		// Counted only for a case that was kept: a label refused on a case that
+		// was then dropped for another reason is not a coverage fact.
+		if (coverage !== undefined && !label) droppedLabel += 1;
+		cases.push({ task: parsed.data, cited: candidate.cited });
 	}
-	return { tasks, droppedMalformed, droppedDuplicate };
+	return { cases, droppedMalformed, droppedDuplicate, droppedJudgeOnly, droppedLabel };
+}
+
+/**
+ * One case as the critic reads it: the case, and the source it stands on.
+ *
+ * On the Spec source there is no per-case source — the whole Spec is already in
+ * the critic's own prompt, and naming it twice would only invite the critic to
+ * check the case against a copy of what it has. On the knowledge-base source the
+ * passage is the source, and checking the case against it is the entire job.
+ */
+function criticCaseOf(admitted: AdmittedCase): CriticCase {
+	const { task } = admitted;
+	return {
+		task: {
+			id: task.id,
+			input: task.input,
+			...(task.expected !== undefined ? { expected: task.expected } : {}),
+			...(task.messages ? { messages: task.messages } : {}),
+			...(task.simulatedUser ? { simulatedUser: task.simulatedUser } : {}),
+			...(task.world !== undefined ? { world: task.world } : {}),
+			...(task.coverage ? { coverage: task.coverage } : {}),
+			...(task.source ? { source: task.source } : {}),
+			graders: task.graders,
+		},
+		sourceLabel: admitted.cited?.label ?? "the specification above",
+		sourceText: admitted.cited?.text ?? null,
+	};
 }
 
 // ---------- the review file ----------
@@ -845,6 +1345,16 @@ function assertReviewPathOutsideTarget(reviewPath: string, targetDir: string, st
 		throw new SealedSynthRefusal(
 			`the review file already exists: ${resolved}`,
 			"choose a path that does not exist yet, or move the existing file aside first",
+		);
+	}
+	// The critic's verdicts land beside the draft, and that write is immutable
+	// too. Refused here, before a token is spent, rather than after the draft is
+	// on disk and the receipt that names it is not.
+	const annotations = sealedSynthCriticAnnotationPath(resolved);
+	if (existsSync(annotations)) {
+		throw new SealedSynthRefusal(
+			`the critic verdicts for that review file already exist: ${annotations}`,
+			"choose a path that does not exist yet, or move that file aside first",
 		);
 	}
 	const parent = dirname(resolved);
@@ -895,6 +1405,32 @@ function writeReviewFile(path: string, tasks: readonly CorpusTask[]): void {
 	});
 }
 
+/** Where the critic's verdicts land beside a draft the human is going to read. */
+export function sealedSynthCriticAnnotationPath(reviewPath: string): string {
+	return `${reviewPath}.critic.jsonl`;
+}
+
+/**
+ * The critic's verdicts, beside the draft rather than inside it.
+ *
+ * Inside would break the file: a draft is a JSONL of corpus tasks and the
+ * import reads every line as one. Beside it, one line per flagged case, and
+ * nothing but the case id, the verdict and the category — the critic's own
+ * prose is left unwritten here for the same reason the receipt never carries
+ * it, since a reason may quote the case it is about and this file is the one a
+ * human opens next to the exam. The human reads the case and decides.
+ */
+function writeCriticAnnotations(reviewPath: string, findings: readonly CriticFinding[]): string | null {
+	const flagged = findings.filter((finding) => finding.verdict !== "valid");
+	if (flagged.length === 0) return null;
+	const path = sealedSynthCriticAnnotationPath(reviewPath);
+	const lines = flagged.map((finding) =>
+		canonicalJson({ taskId: finding.taskId, verdict: finding.verdict, category: dropCategory(finding) })
+	);
+	writeTextArtifact(path, `${lines.join("\n")}\n`, { mode: 0o600, immutable: true });
+	return path;
+}
+
 // ---------- the command ----------
 
 /**
@@ -912,7 +1448,11 @@ interface SealedSynthPreflight {
 	count: number;
 	drawn: CorpusTask[];
 	/** One prompt per drawn passage, in draw order. Empty on the Spec source. */
-	kbCalls: { passage: KbPassage; questions: number; user: string }[];
+	kbCalls: { passage: KbPassage; questions: number; noAnswer: boolean; user: string }[];
+	/** The Spec's jobs: the rows of the matrix, and the only labels a case may carry. */
+	jobs: string[];
+	/** The cells the generator is asked to fill. Empty on the knowledge-base source. */
+	cells: SealedSynthCoverageCell[];
 	kbIndexHash: string | null;
 	/** Characters per generator passage; null on the Spec source. */
 	kbChunkChars: number | null;
@@ -977,7 +1517,7 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 	// Refused before a token is spent, and before the human is asked anything: a
 	// Target with no declared knowledge base has no passages to write questions
 	// from, and an exam about nothing is worse than no exam.
-	let kbCalls: { passage: KbPassage; questions: number; user: string }[] = [];
+	let kbCalls: { passage: KbPassage; questions: number; noAnswer: boolean; user: string }[] = [];
 	let kbIndexHash: string | null = null;
 	let kbChunkChars: number | null = null;
 	let kbQuestions = count;
@@ -1029,14 +1569,27 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 		kbChunkChars = exam.geometry.chars;
 		kbQuestions = Math.min(count, ceiling);
 		kbCalls = drawKbQuestions(exam.passages, target.datasetHash, kbQuestions, seed ?? "")
-			.map((share) => ({
-				passage: share.passage,
-				questions: share.questions,
-				user: kbGeneratorUserPrompt(share.passage, share.questions),
-			}));
+			.map((share, index) => {
+				// Every third passage spends one of its questions on something the
+				// passage does not state. It replaces a factual question rather than
+				// adding to the count — the operator ordered N cases and gets N — and a
+				// passage carrying a single question keeps it factual, because an exam
+				// of nothing but traps measures nothing.
+				const noAnswer = (index + 1) % KB_NO_ANSWER_EVERY === 0 && share.questions >= 2;
+				const questions = noAnswer ? share.questions - 1 : share.questions;
+				return {
+					passage: share.passage,
+					questions,
+					noAnswer,
+					user: kbGeneratorUserPrompt(share.passage, questions, noAnswer),
+				};
+			});
 	}
 
 	const drawn = source === "kb" ? [] : drawExamples(target, examples, seed ?? "");
+	// The matrix belongs to the Spec source: on the knowledge base the passages
+	// decide what is asked, and the host labels only the trap it wrote itself.
+	const cells = source === "kb" ? [] : sealedSynthCoveragePlan(spec.jobs, count);
 	const system = source === "kb" ? KB_GENERATOR_SYSTEM : GENERATOR_SYSTEM;
 	const user = source === "kb"
 		? kbCalls.map((call) => call.user).join("\n\n")
@@ -1044,6 +1597,8 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 			specText: spec.text,
 			examples: drawn,
 			graderShapes: graderShapes(target),
+			jobs: spec.jobs,
+			cells,
 			count,
 		});
 	return {
@@ -1051,6 +1606,8 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 		judge,
 		projectId,
 		source,
+		jobs: spec.jobs,
+		cells,
 		// A base of six passages cannot answer twenty independent questions, so
 		// the request is capped at three per passage and the dialog prices what
 		// will actually be written rather than what was asked for.
@@ -1082,10 +1639,41 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 const ESTIMATE_BYTES_PER_TOKEN = 4;
 const ESTIMATE_OUTPUT_TOKENS_PER_CASE = 200;
 
+/** One verdict is a line and a couple of reasons, not a case. */
+const ESTIMATE_CRITIC_OUTPUT_TOKENS_PER_CASE = 60;
+
 /** What one generation should cost, from the judge's own declared rates. */
 function estimateSealedSynthCostUsd(judge: JudgeModel, promptBytes: number, cases: number): number {
 	const promptTokens = Math.ceil(promptBytes / ESTIMATE_BYTES_PER_TOKEN);
 	const completionTokens = cases * ESTIMATE_OUTPUT_TOKENS_PER_CASE;
+	return evaluatorCostUsd(judge.spec.cost, {
+		promptTokens,
+		completionTokens,
+		totalTokens: promptTokens + completionTokens,
+	});
+}
+
+/** Judge calls the critic adds: one per batch, over the cases that survive parsing. */
+function criticCallCount(cases: number): number {
+	return Math.ceil(cases / CRITIC_BATCH_SIZE);
+}
+
+/**
+ * What the critic adds to the bill.
+ *
+ * Every batch re-sends its own instructions and the Spec, and then the cases it
+ * is reading — which are the cases the generation was priced to write, so they
+ * are counted at the same size. The knowledge-base path also shows each case its
+ * passage, which this does not count: an estimate that guessed at passage
+ * lengths would be no more honest, and the number is shown with a `~`.
+ */
+function estimateCriticCostUsd(judge: JudgeModel, specBytes: number, cases: number): number {
+	const calls = criticCallCount(cases);
+	if (calls === 0) return 0;
+	const promptBytes = calls * (Buffer.byteLength(CRITIC_SYSTEM, "utf8") + specBytes) +
+		cases * ESTIMATE_OUTPUT_TOKENS_PER_CASE * ESTIMATE_BYTES_PER_TOKEN;
+	const promptTokens = Math.ceil(promptBytes / ESTIMATE_BYTES_PER_TOKEN);
+	const completionTokens = cases * ESTIMATE_CRITIC_OUTPUT_TOKENS_PER_CASE;
 	return evaluatorCostUsd(judge.spec.cost, {
 		promptTokens,
 		completionTokens,
@@ -1118,7 +1706,13 @@ export function planSealedSynthesis(options: SealedSynthOptions): SealedSynthPla
 		requested: ready.count,
 		seed: ready.seed,
 		reviewPath: ready.reviewPath,
-		estimatedCostUsd: estimateSealedSynthCostUsd(ready.judge, ready.promptBytes, ready.count),
+		// The critic is part of the price, not an extra nobody was told about: it
+		// reads every case that survives generation, one call per batch.
+		estimatedCostUsd: estimateSealedSynthCostUsd(ready.judge, ready.promptBytes, ready.count) +
+			estimateCriticCostUsd(ready.judge, Buffer.byteLength(ready.spec.text, "utf8"), ready.count),
+		coverageCells: ready.cells,
+		coverageJobs: ready.jobs,
+		criticCalls: criticCallCount(ready.count),
 	};
 }
 
@@ -1131,6 +1725,8 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		count,
 		drawn,
 		kbCalls,
+		jobs,
+		cells,
 		kbIndexHash,
 		kbChunkChars,
 		spec,
@@ -1159,7 +1755,7 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 	// a grader — the only id `kb_search` can hand the agent, and therefore the
 	// only id `cites_source` can check. A passage that answers with fewer
 	// questions than it was asked for costs those questions, not the exam.
-	const generated: unknown[] = [];
+	const generated: GeneratedCandidate[] = [];
 	let unparsedPairs = 0;
 	if (source === "kb") {
 		for (const [index, call] of kbCalls.entries()) {
@@ -1173,20 +1769,40 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 				abortMessage: "sealed synthesis aborted",
 				...(options.signal ? { signal: options.signal } : {}),
 			});
-			const pairs = parseGeneratedPairs(answered.text, call.questions);
-			unparsedPairs += call.questions - pairs.length;
-			for (const pair of pairs) {
+			const reply = parseKbReply(answered.text, call.questions);
+			const cited = { label: `passage ${call.passage.id}`, text: call.passage.text };
+			const asked = call.questions + (call.noAnswer ? 1 : 0);
+			const noAnswer = call.noAnswer ? reply.noAnswer : null;
+			unparsedPairs += asked - reply.pairs.length - (noAnswer ? 1 : 0);
+			const passageMetadata = {
+				kbChunk: call.passage.source,
+				// The finer passage the question was actually written from, when it is
+				// not the whole chunk. An id, and evidence: it says which part of the
+				// source the question stands on.
+				...(call.passage.id === call.passage.source ? {} : { kbPassage: call.passage.id }),
+			};
+			for (const pair of reply.pairs) {
 				generated.push({
-					input: pair.question,
-					expected: pair.answer,
-					metadata: {
-						kbChunk: call.passage.source,
-						// The finer passage the question was actually written from, when
-						// it is not the whole chunk. An id, and evidence: it says which
-						// part of the source the question stands on.
-						...(call.passage.id === call.passage.source ? {} : { kbPassage: call.passage.id }),
+					value: {
+						input: pair.question,
+						expected: pair.answer,
+						metadata: passageMetadata,
+						graders: kbCaseGraders(call.passage.source),
 					},
-					graders: kbCaseGraders(call.passage.source),
+					cited,
+				});
+			}
+			if (noAnswer) {
+				generated.push({
+					value: {
+						input: noAnswer.question,
+						metadata: passageMetadata,
+						// The trap is only a cell of the matrix when the Spec has rows; a
+						// job the Spec does not list would be refused on arrival anyway.
+						...(jobs[0] ? { coverage: { job: jobs[0], difficulty: "no-answer" } } : {}),
+						graders: kbNoAnswerGraders(noAnswer.invented),
+					},
+					cited,
 				});
 			}
 		}
@@ -1201,40 +1817,102 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 			abortMessage: "sealed synthesis aborted",
 			...(options.signal ? { signal: options.signal } : {}),
 		});
-		generated.push(...parseGeneratedCases(called.text));
+		generated.push(...parseGeneratedCases(called.text).map((value) => ({ value, cited: null })));
 	}
 
 	const seenNormalized = new Set(target.tasks.map((task) => normalizedCaseInput(task.input)));
-	const admittedCases_ = admitCases(generated, specSha256, seenNormalized, count);
+	const admittedCases_ = admitCases(generated, specSha256, seenNormalized, count, jobs);
 	// A passage whose answer did not parse is a case that never existed, counted
 	// with the ones validation threw out so the shortfall arithmetic stays true.
 	const admitted = {
 		...admittedCases_,
 		droppedMalformed: admittedCases_.droppedMalformed + unparsedPairs,
 	};
-	if (admitted.tasks.length === 0) {
+	if (admitted.cases.length === 0) {
 		throw new Error(
 			`the generator produced no admissible new case (${admitted.droppedMalformed} malformed, ` +
-				`${admitted.droppedDuplicate} already in the development suite); nothing was sealed`,
+				`${admitted.droppedDuplicate} already in the development suite, ` +
+				`${admitted.droppedJudgeOnly} with no deterministic check); nothing was sealed`,
+		);
+	}
+
+	// The critic reads the cases before anybody seals them. It is asked with the
+	// same judge — the model is already outside the Target's trust domain — and
+	// its exchange lands in the same private directory as the generation, so the
+	// one cleanup at the end takes both copies with it.
+	const critique = await critiqueCases({
+		judge,
+		specText: spec.approved ? specTextOf(spec.approved) : spec.text,
+		tools: target.tools.map((tool) => tool.descriptor.name),
+		cases: admitted.cases.map((admittedCase) => criticCaseOf(admittedCase)),
+		sidecarDir: exchangeDir,
+		batchSize: CRITIC_BATCH_SIZE,
+		...(options.signal ? { signal: options.signal } : {}),
+	});
+	// A sealed exam is never patched by a model nobody reads: a case the critic
+	// would repair is a case whose fix nobody could check, so on the sealing path
+	// `repair` is dropped beside `invalid`. On the review path nothing is dropped
+	// — the human is the reader, and they get the verdicts beside the cases.
+	const dropVerdicts: ReadonlySet<CriticFinding["verdict"]> = reviewPath
+		? new Set()
+		: new Set<CriticFinding["verdict"]>(["invalid", "repair"]);
+	const byTaskId = new Map(critique.findings.map((finding) => [finding.taskId, finding]));
+	const byCategory = emptyDropCounts();
+	// The host's own validity drop, counted in the same vocabulary: a case with
+	// nothing but a judge grader failed the same question the critic asks.
+	byCategory["judge-only"] = admitted.droppedJudgeOnly;
+	const kept: CorpusTask[] = [];
+	for (const admittedCase of admitted.cases) {
+		const finding = byTaskId.get(admittedCase.task.id);
+		if (finding && dropVerdicts.has(finding.verdict)) {
+			byCategory[dropCategory(finding)] += 1;
+			continue;
+		}
+		kept.push(admittedCase.task);
+	}
+	const criticDropped = admitted.droppedJudgeOnly + (admitted.cases.length - kept.length);
+	const critic: SealedSynthCritic = {
+		reviewed: admitted.cases.length,
+		dropped: criticDropped,
+		byCategory,
+		spend: {
+			calls: critique.spend.calls,
+			tokens: critique.spend.tokens,
+			costUsd: critique.spend.costUsd,
+		},
+	};
+	if (kept.length === 0) {
+		throw new Error(
+			`the critic rejected every generated case (${dropReasonList(byCategory)}); nothing was sealed`,
 		);
 	}
 
 	const now = options.now ?? (() => new Date().toISOString());
 	let corpus: CorpusMetadata | null = null;
+	let criticAnnotationsPath: string | null = null;
 	let outcome: SealedSynthReceipt["outcome"];
 	if (reviewPath) {
-		writeReviewFile(reviewPath, admitted.tasks);
-		outcome = { kind: "review", reviewPath, caseCount: admitted.tasks.length };
+		writeReviewFile(reviewPath, kept);
+		criticAnnotationsPath = writeCriticAnnotations(reviewPath, critique.findings);
+		outcome = { kind: "review", reviewPath, caseCount: kept.length };
 	} else {
 		corpus = createCorpus({
 			stateRoot: options.stateRoot,
 			projectId,
 			name: options.name,
 			visibility: "sealed",
-			tasks: admitted.tasks,
+			tasks: kept,
 		});
 		outcome = { kind: "sealed", corpusId: corpus.id, corpusHash: corpus.hash, taskCount: corpus.taskCount };
 	}
+
+	const coverage: SealedSynthCoverage = {
+		jobs,
+		plan: cells,
+		achieved: achievedCells(kept, jobs),
+		unlabelled: kept.filter((task) => task.coverage === undefined).length,
+		droppedLabel: admitted.droppedLabel,
+	};
 
 	// Three durable effects, in the order that survives a crash between any two
 	// of them. The corpus first, because the receipt names it. The receipt next,
@@ -1244,7 +1922,7 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 	// receipt exists, that exchange is the only surviving proof of where the
 	// questions came from.
 	const receipt = SealedSynthReceiptSchema.parse({
-		schemaVersion: 3,
+		schemaVersion: 4,
 		source,
 		kbIndexHash,
 		kbChunkChars,
@@ -1260,9 +1938,11 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		developmentExampleIds: drawn.map((task) => task.id),
 		requested: count,
 		seed,
-		accepted: admitted.tasks.length,
+		accepted: kept.length,
 		droppedMalformed: admitted.droppedMalformed,
 		droppedDuplicate: admitted.droppedDuplicate,
+		coverage,
+		critic,
 		outcome,
 		at: now(),
 	});
@@ -1298,9 +1978,12 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		generatorModel: `${judge.provider}/${judge.id}`,
 		promptSha256,
 		requested: count,
-		accepted: admitted.tasks.length,
+		accepted: kept.length,
 		droppedMalformed: admitted.droppedMalformed,
 		droppedDuplicate: admitted.droppedDuplicate,
+		coverage,
+		critic,
+		criticAnnotationsPath,
 	};
 }
 
@@ -1433,7 +2116,7 @@ export function sealedExamGeneration(
 export interface SealedSynthOutput {
 	/** Exactly what the command prints. Never a case, never a fragment of one. */
 	stdout: string[];
-	/** Counts and guardrails, on stderr, in the shape `ahde corpus ingest` uses. */
+	/** Counts and guardrails, on stderr. */
 	warnings: string[];
 }
 
@@ -1459,12 +2142,15 @@ export function renderSealedSynthOutput(result: SealedSynthResult): SealedSynthO
 			`generator     ${result.generatorModel}`,
 			`prompt        ${result.promptSha256}`,
 			"",
-			"next: read and edit that file, then seal it:",
-			`  ahde corpus import --project ${result.receipt.projectId} --visibility sealed ` +
-				`--name ${JSON.stringify(result.receipt.corpusName)} --file ${result.reviewPath ?? ""}`,
+			`next: read and edit that file, then seal it in the Builder conversation: /holdout ${result.reviewPath ?? ""}`,
 		];
 
 	const warnings: string[] = [`receipt ${result.receiptPath}`];
+	if (result.criticAnnotationsPath) {
+		// A pointer, so the human editing the draft knows a second file is waiting
+		// with the critic's verdict on each case it flagged.
+		warnings.push(`critic verdicts ${result.criticAnnotationsPath}`);
+	}
 	if (result.exchangeRetained) {
 		warnings.push(
 			`warning: the raw generator exchange could not be removed and still holds a copy of the exam: ` +
@@ -1478,6 +2164,14 @@ export function renderSealedSynthOutput(result: SealedSynthResult): SealedSynthO
 		warnings.push(
 			`warning: ${result.droppedDuplicate} generated case(s) repeated a development input and were dropped`,
 		);
+	}
+	if (result.critic && result.critic.dropped > 0) {
+		// Categories, never the critic's own words: its reasons may quote the case
+		// they are about, and this line is read by everyone.
+		warnings.push(t("critic.exam-dropped", {
+			dropped: result.critic.dropped,
+			reasons: dropReasonList(result.critic.byCategory),
+		}));
 	}
 	if (result.accepted < result.requested) {
 		warnings.push(`warning: asked for ${result.requested} case(s), kept ${result.accepted}`);

@@ -61,7 +61,6 @@ import {
 } from "../target/tool-broker.js";
 import { prepareToolHome, type ToolSetupOutcome } from "../target/tool-setup.js";
 import { loadTargetTools, type TargetToolLayout } from "../target/tool-manifest.js";
-import { resolveExecutionBackend } from "../target/container-backend.js";
 import {
 	renderManifest,
 	wholeFileDiff,
@@ -148,25 +147,6 @@ export class ToolWorkshopError extends Error {
 	}
 }
 
-const MAX_TRY_TOOL_INPUT_BYTES = 1024 * 1024;
-
-/** An operator's `--input`: inline JSON, or `@path` to a bounded JSON file. */
-export function readTryToolInput(value: string): unknown {
-	const fromFile = value.startsWith("@");
-	const source = fromFile ? readFileSync(resolve(value.slice(1)), "utf8") : value;
-	if (Buffer.byteLength(source, "utf8") > MAX_TRY_TOOL_INPUT_BYTES) {
-		throw new ToolWorkshopError(`tool input exceeds ${MAX_TRY_TOOL_INPUT_BYTES} bytes`);
-	}
-	try {
-		return JSON.parse(source) as unknown;
-	} catch (error) {
-		throw new ToolWorkshopError(
-			`tool input must be JSON${fromFile ? ` (read from ${value.slice(1)})` : ""}`,
-			{ cause: error },
-		);
-	}
-}
-
 /** Redact first, then bound: a secret must never survive by being at byte 8193. */
 function boundedOutput(value: string): { text: string; truncated: boolean } {
 	const redacted = redactTraceText(value);
@@ -237,32 +217,23 @@ async function runDeclaredToolOnSurface(options: {
 		throw new ToolWorkshopError(`Target declares no tool named ${options.tool}; declared: ${declared}`);
 	}
 	const scratchDir = join(options.scratchRoot, "sandbox");
-	// Resolve the Target's declared backend once and hand that exact choice to
-	// both setup and the tool call. A container Target must never be previewed on
-	// host dependencies and then measured in a different OCI environment.
-	const sandboxChoice = resolveExecutionBackend({
-		policy: options.target.manifest.execution,
-		osBackend: () => detectTargetToolSandbox(options.directory, scratchDir),
-	});
-	const sandboxBackend = sandboxChoice.backend;
+	// Resolve the backend once and hand that exact choice to both setup and the
+	// tool call, so a preview is never confined differently from the measurement.
+	const sandboxBackend = detectTargetToolSandbox(options.directory, scratchDir);
 	const prepared = tool.layout === "directory"
 		? prepareToolHome({
 			workspaceDir: options.directory,
 			scratchDir,
 			tools: resolved.tools,
 			toolHomeRoot: options.toolHomeRoot,
-			policy: options.target.manifest.execution,
 			sandboxBackend,
-			...(sandboxChoice.containerRuntime ? { containerRuntime: sandboxChoice.containerRuntime } : {}),
 			...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
 		})
 		: null;
 	const broker = new TargetToolBroker({
 		workspaceDir: options.directory,
 		scratchDir,
-		policy: options.target.manifest.execution,
 		sandboxBackend,
-		...(sandboxChoice.containerRuntime ? { containerRuntime: sandboxChoice.containerRuntime } : {}),
 		...(prepared ? { toolHomeRoot: prepared.root } : {}),
 		...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
 	});
@@ -410,8 +381,8 @@ function summarizeFixtures(tool: string, fixtures: readonly ToolFixtureOutcome[]
 
 /**
  * Run every declared fixture of one tool against one exact revision, outside
- * any workshop. This is what `ahde tool try --fixtures` is: the same package
- * tests the Builder runs, available to whoever owns the checkout.
+ * any workshop: the same package tests the Builder runs, callable by whoever
+ * owns the checkout.
  */
 export async function runToolFixtures(options: {
 	repositoryDir: string;
@@ -1326,7 +1297,7 @@ export class BuilderWorkshop {
 	/**
 	 * Apply only the execution widening compiled by the typed Tool Authoring
 	 * module. Builder Pi cannot call this primitive directly and cannot change
-	 * sandbox mode, ambient tools, containers, or any model configuration.
+	 * sandbox mode, ambient tools, or any model configuration.
 	 */
 	configureToolAuthoringPolicy(policyValue: {
 		network: "deny" | "allow";
@@ -1528,15 +1499,10 @@ export class BuilderWorkshop {
 			kill();
 		}, timeoutMs);
 		try {
-			let exitCode: number | null;
-			try {
-				exitCode = await new Promise<number | null>((settle, reject) => {
-					child.once("error", reject);
-					child.once("close", settle);
-				});
-			} finally {
-				if (stopped) invocation.terminate?.();
-			}
+			const exitCode = await new Promise<number | null>((settle, reject) => {
+				child.once("error", reject);
+				child.once("close", settle);
+			});
 			if (stopped === "aborted") throw new ToolWorkshopError("the workshop command was aborted");
 			const outText = boundedOutput(Buffer.concat(stdout).toString("utf8"));
 			const errText = boundedOutput(Buffer.concat(stderr).toString("utf8"));
@@ -1564,7 +1530,6 @@ export class BuilderWorkshop {
 		} finally {
 			clearTimeout(timer);
 			request.signal?.removeEventListener("abort", abort);
-			invocation.dispose?.();
 			rmSync(surface, { recursive: true, force: true });
 		}
 	}

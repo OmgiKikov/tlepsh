@@ -1,7 +1,5 @@
 import { percent } from "../measurement.js";
-import { collectCandidateReplayPage } from "./replay-model.js";
 import { renderEvalPage } from "./workspace-page.js";
-import { renderCandidateReplayPage } from "./replay-page.js";
 import { language, t } from "../i18n.js";
 import { DiagnosisClassificationMismatch } from "../application/diagnosis-category.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -49,7 +47,7 @@ export interface EvidenceExplorerOptions {
 	runsRoot: string;
 	/**
 	 * Where this project's human judge labels live. Without it the explorer
-	 * would render "judge not calibrated" beside evidence `ahde report` shows as
+	 * would render "judge not calibrated" beside evidence the HTML report shows as
 	 * calibrated — the same eval run, two AHDE surfaces, opposite claims. Absent
 	 * means the explorer says nothing about calibration rather than asserting
 	 * the negative.
@@ -470,22 +468,6 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 						renderRunDetailPage(collectRunDetailPage(runsRoot, runId)),
 						headOnly,
 					);
-				} catch (error) {
-					sendCollectionFailure(response, error, headOnly);
-				}
-				return;
-			}
-
-			const replayCandidateId = url.pathname.endsWith("/replay")
-				? parseEvalId(url.pathname.slice(0, -"/replay".length), "/candidates/", "candidate id") : null;
-			if (replayCandidateId) {
-				try {
-					const selectors = url.searchParams.getAll("run");
-					if (selectors.length > 1 || selectors[0] === "") throw new EvidenceNotFound("Invalid replay selector");
-					const runId = selectors[0] === undefined ? undefined : safeArtifactSegment(selectors[0], "run id");
-					send(response, 200, "text/html; charset=utf-8", renderCandidateReplayPage(
-						collectCandidateReplayPage(runsRoot, replayCandidateId, { runId }),
-					), headOnly);
 				} catch (error) {
 					sendCollectionFailure(response, error, headOnly);
 				}

@@ -6,7 +6,7 @@ import {
 import { CandidateRecordSchema, type CandidateRecord } from "../src/domain/candidate.js";
 
 /**
- * The two lines `ahde candidate` prints, and the only two an agent may quote
+ * The two candidate verdict lines the Builder prints, and the only two an agent may quote
  * for the ship gate. The sealed guardrail decides whether a candidate may ship,
  * so it has to be sayable — but a sealed line may carry a verdict and a design
  * size and nothing that identifies the exam.

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type {
 	CandidateImpact,
 	CandidateNewFailureMode,
@@ -77,6 +77,7 @@ import type { AgentSpec } from "../src/spec.js";
 import { candidateHeadline } from "../src/workbench/resolution.js";
 import {
 	WorkbenchStageSchema,
+	type WorkbenchBasketReading,
 	type WorkbenchCalibrationProjection,
 	type WorkbenchCandidateSummary,
 	type WorkbenchConfirmation,
@@ -1053,7 +1054,9 @@ describe("renderHeader", () => {
 		expect(bootstrapLines[3]).toBe("Stage Target setup · step 0 of 8 · Next Tell the Builder which model the agent should use");
 		const mid = makeView({ stage: "candidate-verification" });
 		const midLines = renderHeader({ view: mid, plan: compilePlan(mid), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
-		expect(midLines[3]).toBe("Stage Candidate verification · step 5 of 8 · Next Say “check” to verify the change");
+		expect(midLines[3]).toBe("Stage Candidate verification · Next Say “check” to verify the change");
+		// Mid-cycle the count becomes the checklist itself, one line, every step.
+		expect(midLines[4]).toBe("✓ Description  ✓ Agent  ✓ Tests  ◻ Exam  ✓ Baseline  ✓ Change  ▸ Verification  ◻ Release");
 	});
 
 	it("shows blockers except during target setup", () => {
@@ -1068,6 +1071,31 @@ describe("renderHeader", () => {
 // ---------------------------------------------------------------------------
 // 2. renderReview
 // ---------------------------------------------------------------------------
+
+describe("regression guards on the candidate card", () => {
+	it("names what the base held and what the change broke, in the operator's language", () => {
+		const base = makeCandidate().development!;
+		const guards = (broken: string[]) => makeCandidateReview({
+			development: { ...base, regressionGuards: { policy: "regression-guards-v1", guarded: 7, broken } },
+		});
+		const kept = renderReview(guards([]), plainPaint).join("\n");
+		expect(kept).toContain("Regression guards");
+		expect(kept).toContain("7 cases the base passed every time, all kept");
+		const broken = renderReview(guards(["task-refund"]), plainPaint).join("\n");
+		expect(broken).toContain("1 of 7 cases the base passed every time now fail every time — cannot ship");
+		expect(broken).toContain("task-refund");
+		setLanguage("ru");
+		try {
+			const russian = renderReview(guards(["task-refund"]), plainPaint).join("\n");
+			expect(russian).toContain("Регрессионные кейсы");
+			expect(russian).toContain("сломано 1 из 7 кейсов, которые база проходила всегда: так не выкатить");
+		} finally {
+			setLanguage("en");
+		}
+		// Evidence recorded before the rule existed says nothing rather than "all kept".
+		expect(renderReview(makeCandidateReview(), plainPaint).join("\n")).not.toContain("Regression guards");
+	});
+});
 
 describe("renderReview", () => {
 	it("renders a spec draft with lists, open questions, and the snapshot hash", () => {
@@ -1176,9 +1204,9 @@ describe("renderReview", () => {
 		expect(text).toContain("<dim>Evidence</dim> eval eval-1 · 1 failure mode targeted · 1 run reference");
 		expect(text).toContain("<warning>Risks</warning>\n  <dim>•</dim> May slow down simple replies");
 		expect(text).toContain("<dim>Validation plan</dim>\n  <dim>•</dim> Re-run the development basket");
-		expect(text).toContain("<dim>Diff</dim>\n<dim>diff --git a/AGENTS.md b/AGENTS.md</dim>\n<dim>index 1111111..2222222 100644</dim>\n<bold>--- a/AGENTS.md</bold>\n<bold>+++ b/AGENTS.md</bold>\n<accent>@@ -1,2 +1,3 @@</accent>\n Existing line\n<removed>-Old guidance</removed>\n<added>+New guidance</added>\n<added>+Use the lookup tool first</added>");
+		expect(text).toContain("<dim>Diff</dim>\n<bold>AGENTS.md</bold>  <added>+2</added> <removed>-1</removed>\n<dim>  1   1</dim>   Existing line\n<removed>  2     - Old guidance</removed>\n<added>      2 + New guidance</added>\n<added>      3 + Use the lookup tool first</added>");
 		expect(text).not.toContain("Applied");
-		expect(lines[lines.length - 1]).toBe("<added>+Use the lookup tool first</added>");
+		expect(lines[lines.length - 1]).toBe("<added>      3 + Use the lookup tool first</added>");
 	});
 
 	it("marks truncated diffs and spec-only proposals", () => {
@@ -1187,14 +1215,14 @@ describe("renderReview", () => {
 		expect(text).toContain("Evidence none linked (spec-only proposal)");
 		expect(text).not.toContain("Risks");
 		expect(text).not.toContain("Validation plan");
-		expect(lines[lines.length - 1]).toBe("… 6 more diff lines; open the full proposal artifact for the exact remainder");
-		expect(text).not.toContain("+New guidance");
+		expect(lines[lines.length - 1]).toBe("… 2 more diff lines; open the full proposal artifact for the exact remainder");
+		expect(text).not.toContain("+ New guidance");
 	});
 
 	it("never truncates the human's exact proposal review by default", () => {
-		const exactDiff = [DIFF.trimEnd(), ...Array.from({ length: 450 }, (_, index) => `+line-${index}`)].join("\n");
+		const exactDiff = [DIFF.trimEnd().replace("+1,3 @@", "+1,453 @@"), ...Array.from({ length: 450 }, (_, index) => `+line-${index}`)].join("\n");
 		const text = renderReview(makeProposal({ exactDiff }), plainPaint).join("\n");
-		expect(text).toContain("+line-449");
+		expect(text).toContain("+ line-449");
 		expect(text).not.toContain("more diff lines");
 	});
 
@@ -1347,7 +1375,7 @@ describe("renderReview", () => {
 		}), plainPaint).join("\n");
 		expect(unbuilt).toContain("main@aaaaaaaaaa → not built");
 		expect(unbuilt).toContain("Development not evaluated yet");
-		expect(unbuilt).toContain("Sealed holdout not executed");
+		expect(unbuilt).toContain("Sealed holdout not run yet — ship runs it");
 		const unreconstructable = renderReview(makeCandidateReview({
 			development: { baselineEvalRunId: "a", candidateEvalRunId: "b", comparison: null, gate: null },
 		}), plainPaint).join("\n");
@@ -1804,6 +1832,30 @@ describe("renderDecision", () => {
 		expect(noLive).not.toContain("Live trace");
 	});
 
+	/**
+	 * The basket reading closes the run panel: the diagnosis says what the agent
+	 * did, the basket says what the cases did, and the last thing under both is
+	 * the rule the next decision is taken under — a case is never dropped for
+	 * failing. A run that carried no reading leaves the panel exactly as it was.
+	 */
+	it("closes a run panel with the basket reading, and only when the run carried one", () => {
+		const basket: WorkbenchBasketReading = {
+			evalRunId: "eval-1",
+			cases: [],
+			counts: { saturated: 2, failing: 1, unstable: 0, failingValid: 1, failingDoubtful: 0, failingUnreviewed: 0 },
+			wave: null,
+			origins: { real: 0, synthetic: 3, unknown: 0, comparable: [], realism: "unverified" },
+			nextWave: { emptyCells: [], targetModes: ["lookup was never called"], harderJobs: [] },
+		};
+		const lines = renderDecision(decision("run-eval", makeRun({}, { basket }), "improvement-authoring"), plainPaint);
+		expect(lines).toContain(t("basket.title"));
+		expect(lines.join("\n")).toContain("capability work for the agent");
+		expect(lines[lines.length - 2]).toBe(t("basket.rule"));
+		expect(lines[lines.length - 1]).toBe(nextLine("improvement-authoring"));
+		const without = renderDecision(decision("run-eval", makeRun(), "improvement-authoring"), plainPaint);
+		expect(without.join("\n")).not.toContain(t("basket.title"));
+	});
+
 	it("ends a run with one next step, in one wording", () => {
 		// Session 6 printed two: `Дальше скажи «почини первую проблему» (или
 		// назови режим) …` from the diagnosis panel, then `Дальше Скажи «исправь
@@ -2089,11 +2141,12 @@ describe("renderConfirmation", () => {
 		expect(withDiff[1]).toBe("<dim>Model</dim> openai/gpt-5 <dim>· thinking medium · timeout 300s per turn</dim>");
 		expect(withDiff[2]).toBe("<dim>Credential env</dim> <bold>OPENAI_API_KEY</bold> <dim>(name only; set the value in your shell)</dim>");
 		expect(withDiff[3]).toBe("<dim>manifest.yaml diff</dim>");
-		expect(withDiff.join("\n")).toContain("<removed>-id: target</removed>\n<added>+id: support-bot</added>");
+		expect(withDiff.join("\n")).toContain("<removed>  1     - id: target</removed>\n<added>      1 + id: support-bot</added>");
 		expect(withDiff.join("\n")).not.toContain("sk-");
 		const flatDiff = renderConfirmation(makeConfirmation("configure-target", { targetId: "support-bot", model: next.model, diff: "+id: support-bot" }), plainPaint);
 		expect(flatDiff).toContain("manifest.yaml diff");
-		expect(flatDiff).toContain("+id: support-bot");
+		// A bare `+` line has no trustworthy hunk numbers; retain the raw patch.
+		expect(flatDiff.some((line) => line.endsWith("+id: support-bot"))).toBe(true);
 		const noDiff = renderConfirmation(makeConfirmation("configure-target", { next }), plainPaint);
 		expect(noDiff.join("\n")).toContain("manifest.yaml diff is not available");
 		tail(noDiff);
@@ -2120,7 +2173,7 @@ describe("renderConfirmation", () => {
 		tail(lines);
 	});
 
-	it("numbers the tasks for publish-corpus", () => {
+	it("numbers full case cards for publish-corpus", () => {
 		const draft = makeCorpusDraft();
 		const lines = renderConfirmation(makeConfirmation("publish-corpus", {
 			operation: "publish-development-corpus",
@@ -2130,14 +2183,71 @@ describe("renderConfirmation", () => {
 			publication: { schemaVersion: 1, projectId: "proj", name: "Tier-one basket", visibility: "development", taskCount: 3, contentHash: HASH, subjectHash: HASH },
 			tasks: draft.tasks,
 		}), plainPaint);
-		expect(lines.slice(0, 5)).toEqual([
+		expect(lines.slice(0, 9)).toEqual([
 			"Basket Tier-one basket · 3 cases · cccccccccccc…",
+			"Sample cases",
 			"   1. Customer asks for a refund",
+			"      graders: tool lookup ∋ “refund” · contains “refund policy” · matches /^Refund/ · judge “Polite and accurate”",
 			"   2. Customer asks for shipping status",
+			"      graders: tool track",
 			"   3. Customer asks to cancel",
+			"      graders: judge “Confirms cancellation”",
 			"Publishing makes these cases the development evidence for this Spec lineage.",
 		]);
 		tail(lines);
+	});
+
+	it.each(["publish-corpus", "start-testing"] as const)("bounds %s to five cards and counts omitted cases", (kind) => {
+		const tasks = Array.from({ length: 12 }, (_, index) => CorpusTaskSchema.parse({
+			id: `case-${index + 1}`, input: `Question ${index + 1}`, expected: `Answer ${index + 1}`,
+			graders: [{ type: "exact" }],
+		}));
+		const subject = kind === "publish-corpus"
+			? { publication: { name: "Large basket", taskCount: tasks.length, contentHash: HASH }, tasks }
+			: { basket: "Large basket", taskCount: tasks.length, sampleCases: tasks.map(datasetCasePreview) };
+		const lines = renderConfirmation(makeConfirmation(kind, subject), plainPaint);
+		expect(lines).toContain("   5. Question 5");
+		expect(lines).toContain("      expected: Answer 5");
+		expect(lines.join("\n")).not.toContain("Question 6");
+		expect(lines).toContain("  … +7 more cases");
+		expect(lines.length).toBeLessThan(35);
+		tail(lines);
+	});
+
+	it("uses the full start-testing count even when the host already bounded the samples", () => {
+		const sample = datasetCasePreview(CorpusTaskSchema.parse(makeCorpusDraft().tasks[0]));
+		const lines = renderConfirmation(makeConfirmation("start-testing", { sampleCases: [sample], taskCount: 12 }), plainPaint);
+		expect(lines).toContain("   1. Customer asks for a refund");
+		expect(lines).toContain("  … +11 more cases");
+		for (const sampleCases of [undefined, null, []]) {
+			const absent = renderConfirmation(makeConfirmation("start-testing", { sampleCases, taskCount: 12 }), plainPaint);
+			expect(absent.join("\n")).not.toContain("Sample cases");
+			expect(absent.join("\n")).not.toContain("more cases");
+		}
+	});
+
+	it("keeps partial publication tasks readable without hiding valid cards or dumping validation errors", () => {
+		const valid = CorpusTaskSchema.parse({ id: "full-task", input: "Full task", expected: "approved", graders: [{ type: "exact" }] });
+		const lines = renderConfirmation(makeConfirmation("publish-corpus", {
+			tasks: [
+				{ input: `${HOSTILE} sk-${CSI}card-test-credential`, extra: "HIDDEN-SCHEMA".repeat(1_000) },
+				valid,
+				{ input: "Partial task", graders: [{ type: "bad-grader", nested: { private: "HIDDEN-SCHEMA" } }] },
+				"Old task text",
+				null,
+			],
+		}), plainPaint);
+		const text = lines.join("\n");
+		expectClean(text);
+		expect(text).not.toContain("card-test-credential");
+		expect(text).not.toContain("HIDDEN-SCHEMA");
+		expect(text).not.toContain("bad-grader");
+		expect(text).not.toContain("{");
+		expect(lines).toContain("   2. Full task");
+		expect(lines).toContain("      expected: approved");
+		expect(lines).toContain("   3. Partial task");
+		expect(lines).toContain("   4. Old task text");
+		expect(lines).toContain(`   5. ${t("view.case-unnamed")}`);
 	});
 
 	it("multiplies tasks by repetitions for run-eval", () => {
@@ -2301,15 +2411,11 @@ describe("renderConfirmation", () => {
 			"Risks",
 			"  • May slow down simple replies",
 			"Diff",
-			"diff --git a/AGENTS.md b/AGENTS.md",
-			"index 1111111..2222222 100644",
-			"--- a/AGENTS.md",
-			"+++ b/AGENTS.md",
-			"@@ -1,2 +1,3 @@",
-			" Existing line",
-			"-Old guidance",
-			"+New guidance",
-			"+Use the lookup tool first",
+			"AGENTS.md  +2 -1",
+			"  1   1   Existing line",
+			"  2     - Old guidance",
+			"      2 + New guidance",
+			"      3 + Use the lookup tool first",
 			"Your checkout stays where it is; the proposal is committed on the candidate branch.",
 			"",
 			"Reason Reviewed the exact subject",
@@ -2323,7 +2429,7 @@ describe("renderConfirmation", () => {
 		}, tagPaint);
 		expect(painted[0]).toBe("<dim>Branch</dim> <bold>ahde/fix-lookup</bold> <dim>· base</dim> aaaaaaaaaa");
 		expect(painted[2]).toBe("<dim>Changes</dim> AGENTS.md <dim>(<added>+2</added> <removed>-1</removed>)</dim>");
-		expect(painted).toContain("<added>+New guidance</added>");
+		expect(painted).toContain("<added>      2 + New guidance</added>");
 	});
 
 	it("says the check is unknown when nothing comparable has run, and points long diffs at /review", () => {
@@ -2339,14 +2445,16 @@ describe("renderConfirmation", () => {
 			"Verification under $0.01 · under a minute — approving this change also approves that measurement",
 		);
 
-		const exactDiff = [DIFF.trimEnd(), ...Array.from({ length: 200 }, (_, index) => `+line-${index}`)].join("\n");
+		const exactDiff = [DIFF.trimEnd().replace("+1,3 @@", "+1,203 @@"), ...Array.from({ length: 200 }, (_, index) => `+line-${index}`)].join("\n");
 		const long = renderConfirmation(makeConfirmation("apply-proposal", {
 			...applySubject(),
 			...makeProposal({ exactDiff }),
 		}), plainPaint);
-		expect(long).toContain("+line-110");
-		expect(long).not.toContain("+line-111");
-		expect(long).toContain("… 89 more diff lines; /review shows the exact remainder");
+		// 120 rows: the header, one context row, one removed, two added, then
+		// the numbered additions up to line-114.
+		expect(long.some((line) => line.endsWith("+ line-114"))).toBe(true);
+		expect(long.some((line) => line.endsWith("+ line-115"))).toBe(false);
+		expect(long).toContain("… 85 more diff lines; /review shows the exact remainder");
 	});
 
 	it("describes a discard subject generically", () => {
@@ -2730,6 +2838,13 @@ describe("transcript markers", () => {
 		for (const line of plain.slice(1)) expect(line.startsWith("      ")).toBe(true);
 		expect(continuationPrefix("  +added")).toBe("  +");
 		expect(continuationPrefix("  Дальше")).toBe("    ");
+		// A rendered diff row hangs under its marker, with the gutter left blank.
+		expect(continuationPrefix("      2 + New guidance")).toBe("        + ");
+		expect(continuationPrefix(" 12     - Old guidance")).toBe("        - ");
+		const numbered = hangingWrap(`      2 + ${"слово ".repeat(20).trim()}`, 40);
+		expect(numbered.length).toBeGreaterThan(1);
+		for (const line of numbered.slice(1)) expect(line.startsWith("        + ")).toBe(true);
+		expect(continuationPrefix("  1   1   context")).toBe("    ");
 		// A line that fits is left exactly as it is.
 		expect(hangingWrap("  +short", 40)).toEqual(["  +short"]);
 	});
@@ -3019,27 +3134,54 @@ describe("format helpers", () => {
 		expect(numbered(["x"], tagPaint)).toEqual(["  <dim> 1.</dim> x"]);
 	});
 
-	it("colors unified diffs and counts their stats", () => {
+	it("renders a unified diff as an editor would: file header with stats, a line-number gutter, painted rows", () => {
 		expect(diffStats(DIFF)).toEqual({ files: 1, added: 2, removed: 1 });
 		expect(diffStats("")).toEqual({ files: 0, added: 0, removed: 0 });
 		const lines = renderUnifiedDiff(DIFF, tagPaint);
 		expect(lines).toEqual([
-			"<dim>diff --git a/AGENTS.md b/AGENTS.md</dim>",
-			"<dim>index 1111111..2222222 100644</dim>",
-			"<bold>--- a/AGENTS.md</bold>",
-			"<bold>+++ b/AGENTS.md</bold>",
-			"<accent>@@ -1,2 +1,3 @@</accent>",
-			" Existing line",
-			"<removed>-Old guidance</removed>",
-			"<added>+New guidance</added>",
-			"<added>+Use the lookup tool first</added>",
+			"<bold>AGENTS.md</bold>  <added>+2</added> <removed>-1</removed>",
+			"<dim>  1   1</dim>   Existing line",
+			"<removed>  2     - Old guidance</removed>",
+			"<added>      2 + New guidance</added>",
+			"<added>      3 + Use the lookup tool first</added>",
 		]);
+		// The cut counts rows, and the header survives it.
 		expect(renderUnifiedDiff(DIFF, tagPaint, { maxLines: 2 })).toEqual([
-			"<dim>diff --git a/AGENTS.md b/AGENTS.md</dim>",
-			"<dim>index 1111111..2222222 100644</dim>",
-			"<warning>… 7 more diff lines; open the full proposal artifact for the exact remainder</warning>",
+			"<bold>AGENTS.md</bold>  <added>+2</added> <removed>-1</removed>",
+			"<dim>  1   1</dim>   Existing line",
+			"<warning>… 3 more diff lines; open the full proposal artifact for the exact remainder</warning>",
 		]);
 		expect(renderUnifiedDiff("", plainPaint)).toEqual([]);
+	});
+
+	it("names a new file, separates hunks, and folds a long unchanged run in the middle of one", () => {
+		const diff = [
+			"diff --git a/skills/refund.md b/skills/refund.md",
+			"new file mode 100644",
+			"--- /dev/null",
+			"+++ b/skills/refund.md",
+			"@@ -0,0 +1,1 @@",
+			"+# Refunds",
+			"diff --git a/AGENTS.md b/AGENTS.md",
+			"--- a/AGENTS.md",
+			"+++ b/AGENTS.md",
+			"@@ -1,3 +1,3 @@",
+			" a", "-b", "+B", " c",
+			"@@ -20,11 +20,11 @@",
+			"-x", " 1", " 2", " 3", " 4", " 5", " 6", " 7", " 8", " 9", " 10", "+y",
+			"",
+		].join("\n");
+		setLanguage("en");
+		const lines = renderUnifiedDiff(diff, plainPaint);
+		expect(lines[0]).toBe("skills/refund.md (new file)  +1");
+		expect(lines[1]).toBe("new file mode 100644");
+		expect(lines[2]).toBe("      1 + # Refunds");
+		expect(lines[3]).toBe("");
+		expect(lines[4]).toBe("AGENTS.md  +2 -2");
+		expect(lines).toContain("          ⋯");
+		expect(lines).toContain("          ⋯ 4 unchanged lines");
+		// Numbers keep counting across the fold.
+		expect(lines.at(-1)).toBe("     30 + y");
 	});
 });
 
@@ -3203,7 +3345,7 @@ describe("the workshop-close review", () => {
 		expect(text).toContain("Tool tests");
 		expect(text).toContain("✓ weather 2/2 fixtures");
 		// The whole diff, then the only two things that can happen next.
-		expect(text).toContain("+name: weather");
+		expect(text).toContain("+ name: weather");
 		expect(text).toContain("Apply or discard");
 		expect(text).toContain("Nothing changes until you apply.");
 	});
@@ -3504,7 +3646,152 @@ describe("a refusal on screen", () => {
 });
 
 describe("dataset case cards", () => {
+	beforeEach(() => setLanguage("en"));
 	const preview = (task: Record<string, unknown>) => datasetCasePreview(CorpusTaskSchema.parse(task));
+	it.each([false, true])("redacts authentication codes in displayed facts and qualified metadata (world=%s)", (worlded) => {
+		const task = CorpusTaskSchema.parse({
+			id: "auth-facts", input: "Help with my card", expected: "Ask for a safe identifier",
+			simulatedUser: { goal: "Recover card access", knownFacts: "Card ends in 4412; My PIN: 4829; passcode='7391'; OTP=625108; CVV: 907", maxTurns: 3 },
+			metadata: { customer_pin: "2516", customer_passcode: "6284", card_cvc: "529", account: "4412" },
+			...(worlded ? { world: { state: { cardStatus: "active" } } } : {}),
+			graders: [{ type: "exact" }],
+		});
+		const sample = datasetCasePreview(task);
+		for (const lines of [worldCardLines(sample, plainPaint), renderConfirmation(makeConfirmation("publish-corpus", {
+			publication: { name: "Safe identifiers", taskCount: 1, contentHash: HASH }, tasks: [task],
+		}), plainPaint)]) {
+			const text = lines.join("\n");
+			for (const value of ["4829", "7391", "625108", "907", "2516", "6284", "529"]) expect(text).not.toContain(value);
+			expect(text).toContain("4412");
+			expect(text).toContain("[REDACTED]");
+		}
+	});
+	it.each([false, true])("keeps expected and source claims visible through review and confirmation (world=%s)", (worlded) => {
+		const task = CorpusTaskSchema.parse({
+			id: "refund-window", input: "What is the refund window?", expected: "30 days",
+			...(worlded ? { world: {
+				state: { refund: { status: "requested" } },
+				expect: [{ path: "refund.status", op: "equals", value: "approved" }],
+			} } : {}),
+			metadata: {
+				tier: "standard", category: "refund", language: "en", rationale: "Read the policy",
+				source: `data/kb/refund-policy.md@${SHA_A} ${HASH}`,
+				source_path: "data/kb/refund-policy.md", source_sha256: HASH,
+			},
+			graders: [{ type: "exact" }],
+		});
+		const sample = datasetCasePreview(task);
+		expect(sample.expected).toBe("30 days");
+		expect(sample.metadata?.source_sha256).toBe(HASH);
+		const cards = renderDatasetCases([sample], plainPaint);
+		const review = renderReview(makeCorpusDraft({ tasks: [task] }), plainPaint);
+		const confirmation = renderConfirmation(makeConfirmation("import-dataset", {
+			name: "Refunds", sourcePath: "imports/refunds.jsonl", developmentCount: 1,
+			recipe: { input: { column: "input" }, expected: { column: "expected" } },
+			sampleCases: [sample],
+		}), plainPaint);
+		const publication = renderConfirmation(makeConfirmation("publish-corpus", {
+			operation: "publish-development-corpus", draftId: "corpus-draft-1", draftHash: HASH,
+			approvedSpec: makeCorpusDraft().approvedSpec,
+			publication: { name: "Refunds", taskCount: 1, contentHash: HASH }, tasks: [task],
+		}), plainPaint);
+		const testing = renderConfirmation(makeConfirmation("start-testing", {
+			operation: "start-testing", steps: ["publish-corpus", "run-eval"],
+			spec: "Refund support", basket: "Refunds", run: "1 case", taskCount: 1,
+			sampleCases: [datasetCasePreview(task)], estimatedCost: "unknown", estimatedTime: "unknown",
+		}), plainPaint);
+		for (const lines of [cards, review, confirmation, publication, testing]) {
+			expect(lines).toContain("      expected: 30 days");
+			const text = lines.join("\n");
+			expect(text).toContain("source claims (not verified):");
+			expect(text).toContain(`source=data/kb/refund-policy.md@${SHA_A}`);
+			expect(text).toContain("source_path=data/kb/refund-policy.md");
+			expect(text).toContain(`source_sha256=${HASH}`);
+			expect(text).toContain(worlded ? 'must: refund.status equals "approved" · exact' : "graders: exact");
+			expect(text).not.toContain('"source_path":');
+		}
+	});
+	it.each([false, true])("keeps scripted dialogue visible without claiming it is a live user (world=%s)", (worlded) => {
+		const sample = preview({
+			id: "scripted-refund", input: "Order 42, please.",
+			messages: [
+				{ role: "user", content: "I need a refund." },
+				{ role: "assistant", content: "Which order?" },
+				{ role: "user", content: "Order 42, please." },
+			],
+			...(worlded ? { world: { state: { order: "42" } } } : {}),
+			graders: [{ type: "output_contains", text: "refund" }],
+		});
+		const text = worldCardLines(sample, plainPaint).join("\n");
+		expect(text).toContain('dialogue: 3 turns ending in “Order 42, please.”');
+		expect(text).not.toContain("live user:");
+	});
+	it.each([false, true])("bounds and redacts case details before painting them (world=%s)", (worlded) => {
+		const secret = "sk-card-test-credential";
+		const hostile = `sk-${CSI}card-test-credential${OSC}`;
+		const sample = preview({
+			id: "hostile-source", input: "Check the refund window.",
+			expected: `${hostile} ${"x".repeat(400)} HIDDEN-END`,
+			...(worlded ? { world: { state: { status: "open" } } } : {}),
+			metadata: {
+				source: `${hostile} ${"x".repeat(400)} HIDDEN-END`,
+				source_path: `data/kb/${hostile}.md`, source_sha256: hostile,
+				password: "opaque-secret", pin: "4829", service_token: "opaque-token",
+				[HOSTILE]: HOSTILE,
+			},
+			graders: [{ type: "exact" }],
+		});
+		for (const paint of [plainPaint, tagPaint]) {
+			const lines = worldCardLines(sample, paint);
+			const text = lines.join("\n");
+			expectClean(text);
+			for (const hidden of [secret, "opaque-secret", "4829", "opaque-token", "HIDDEN-END"]) {
+				expect(text).not.toContain(hidden);
+			}
+			expect(text).toContain("[REDACTED_API_KEY]");
+			expect(text).toContain("source_path=data/kb/[REDACTED_API_KEY].md");
+			expect(text).toContain("…");
+			expect(lines.length).toBeLessThanOrEqual(11);
+			expect(Math.max(...lines.map((line) => line.length))).toBeLessThan(160);
+		}
+	});
+	it.each([false, true])("keeps absent details quiet and localizes source claims only when present (world=%s)", (worlded) => {
+		setLanguage("ru");
+		const sample = preview({
+			id: "quiet-card", input: "Check the refund window.",
+			...(worlded ? { world: { state: { status: "open" } } } : {}),
+			metadata: { source: "", source_path: " ", source_sha256: "" },
+			graders: [{ type: "output_contains", text: "refund" }],
+		});
+		const text = worldCardLines(sample, plainPaint).join("\n");
+		for (const key of ["view.expected", "view.dialogue", "view.live-user", "view.metadata", "view.source-claims", "view.known-facts", "view.user-stop"] as const) {
+			expect(text).not.toContain(t(key));
+		}
+		const sourced = worldCardLines({ ...sample, metadata: { source_path: "data/kb/refunds.md" } }, plainPaint);
+		expect(sourced).toContain("      источники со слов автора (не проверены):");
+		expect(sourced).toContain("        source_path=data/kb/refunds.md");
+	});
+	it.each([false, true])("keeps user knowledge and dialogue stopping separate from business success (world=%s)", (worlded) => {
+		setLanguage("ru");
+		const sample = preview({
+			id: "lost-card", input: "Я потерял карту.",
+			simulatedUser: {
+				goal: "Заблокировать потерянную карту", persona: "Отвечает коротко",
+				knownFacts: "Моя карта заканчивается на 4412.", maxTurns: 4,
+				stopWhen: "Агент объяснил следующий шаг",
+			},
+			...(worlded ? { world: { state: { client: { name: "Anna" }, backendReason: "fraud-review", cardStatus: "active" } } } : {}),
+			graders: [{ type: "tool_called", tool: "block_card" }],
+		});
+		const lines = worldCardLines(sample, plainPaint);
+		if (worlded) expect(lines).toContain("      кто: Anna");
+		expect(lines.join("\n")).toContain("в роли Отвечает коротко");
+		expect(sample.simulatedUser?.knownFacts).toBe("Моя карта заканчивается на 4412.");
+		expect(lines.find((line) => line.includes("Пользователь знает"))).toBe("      Пользователь знает Моя карта заканчивается на 4412.");
+		expect(lines.find((line) => line.includes("Пользователь знает"))).not.toContain("fraud-review");
+		expect(lines.join("\n")).toContain("Конец диалога (не вердикт успеха) Агент объяснил следующий шаг");
+		expect(lines.join("\n")).toContain("block_card");
+	});
 	const PLAIN = {
 		id: "task_001",
 		input: "Классифицируй обращение: жалоба на списание.",

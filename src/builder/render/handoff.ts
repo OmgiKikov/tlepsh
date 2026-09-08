@@ -18,6 +18,8 @@ export function handoffLines(result: WorkbenchDecisionResult, paint: Paint): str
 	const verified = result.kind === "apply-proposal" &&
 		result.result.verification !== undefined &&
 		result.result.verification.outcome !== "blocked";
-	if (result.kind !== "ship" && !verified) return [];
+	// The first build is the moment the agent starts existing at all.
+	const built = result.kind === "apply-proposal" && result.result.firstBuild !== undefined;
+	if (result.kind !== "ship" && !verified && !built) return [];
 	return ["", paint.accent(t("handoff.talk-to-agent"))];
 }

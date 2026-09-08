@@ -7,7 +7,7 @@ import type {
 import { examShortfall, joinNonEmpty, oneLine, percent } from "./format.js";
 import { blockerLines } from "./view.js";
 import type { Paint } from "./paint.js";
-import { stageLabel } from "./stage.js";
+import { buildRequired, stageLabel } from "./stage.js";
 
 /**
  * The cycle as a checklist.
@@ -58,6 +58,8 @@ export interface PlanStep {
 
 export interface Plan {
 	stage: WorkbenchStage;
+	/** The stage as the operator lives it: “building the agent” while it is still the template. */
+	stageLabel: string;
 	steps: PlanStep[];
 	blockers: string[];
 }
@@ -143,6 +145,9 @@ function specStep(view: WorkbenchView): { done: boolean; detail: string } {
 function harnessStep(view: WorkbenchView, facts: PlanFacts): { done: boolean; detail: string } {
 	if (view.target.status === "missing") return { done: false, detail: t("target.missing") };
 	if (view.target.status === "bootstrap-required") return { done: false, detail: t("target.model-not-chosen") };
+	// A configured model is not an agent: until its instructions stop being the
+	// template's, the step is ahead of the operator, not behind them.
+	if (view.target.built === false) return { done: false, detail: t("plan.harness.template") };
 	const surface = facts.harness
 		? `${plural(facts.harness.tools, "tool")} · ${plural(facts.harness.skills, "skill")}`
 		: "";
@@ -233,7 +238,8 @@ function releaseStep(view: WorkbenchView): { done: boolean; detail: string } {
  * to the same plan, which is what makes the widget cheap to refresh.
  */
 export function compilePlan(view: WorkbenchView, facts: PlanFacts = {}): Plan {
-	const current = CURRENT_STEP[view.stage] ?? null;
+	const building = buildRequired(view);
+	const current = building ? "harness" : CURRENT_STEP[view.stage] ?? null;
 	const blocked = view.blockers.length > 0;
 	const parts: Record<PlanStepId, { done: boolean; detail: string; items?: string[] }> = {
 		spec: specStep(view),
@@ -262,6 +268,7 @@ export function compilePlan(view: WorkbenchView, facts: PlanFacts = {}): Plan {
 	});
 	return {
 		stage: view.stage,
+		stageLabel: building ? t("stage.build") : stageLabel(view.stage),
 		steps,
 		blockers: blockerLines(view).map((blocker) => oneLine(blocker, 160)),
 	};
@@ -291,6 +298,23 @@ export function renderPlan(plan: Plan, paint: Paint): string[] {
 	return lines;
 }
 
+/**
+ * The whole cycle on one line — `✓ Description  ✓ Agent  ▸ Tests  ◻ Exam …` —
+ * the checklist a coding agent keeps above its editor, kept in the header so
+ * it is always on screen. Painted by state: done, current, ahead, blocked.
+ */
+export function planStrip(plan: Plan, paint: Paint): string {
+	return plan.steps.map((step) => {
+		const marker = paintMarker(step.marker, paint);
+		switch (step.marker) {
+			case "done": return `${marker} ${step.title}`;
+			case "current": return `${marker} ${paint.bold(step.title)}`;
+			case "blocked": return `${marker} ${paint.warning(step.title)}`;
+			default: return `${marker} ${paint.muted(step.title)}`;
+		}
+	}).join("  ");
+}
+
 /** Phases already behind the operator. */
 export function planProgress(plan: Plan): { done: number; total: number } {
 	return {
@@ -312,6 +336,6 @@ export function planHeadline(plan: Plan): string {
 		done: progress.done,
 		total: progress.total,
 		marker: PLAN_MARKERS[current?.marker ?? "ahead"],
-		step: stageLabel(plan.stage),
+		step: plan.stageLabel,
 	}), 90);
 }

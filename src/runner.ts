@@ -139,7 +139,7 @@ export { FINAL_ANSWER_RECOVERY_PROMPT };
  */
 let runSequence = 0;
 
-/** The one run-id minter. `ahde regrade` shares it so a derived run cannot collide. */
+/** The one run-id minter. `/regrade` shares it so a derived run cannot collide. */
 export function newRunId(): string {
 	runSequence += 1;
 	return `run_${Date.now().toString(36)}${runSequence.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -268,7 +268,7 @@ export function isPrivateWorkspacePath(
 	const normalized = normalizedRepositoryPath(path);
 	const parts = normalized.split("/");
 	if (parts[0] === "imports") return true;
-	// The recorded dataset `ahde export` writes beside the Target. It is
+	// The recorded dataset `/dataset` writes beside the Target. It is
 	// compiled FROM evidence, so letting it back into a workspace snapshot would
 	// feed a run its own past conversations and move the workspace hash every
 	// time an operator exported. Top-level only, exactly like `imports/`.
@@ -334,7 +334,10 @@ function targetSourceIdentity(target: ResolvedTarget): string {
 		gitSha: target.gitSha,
 		manifest: {
 			...target.manifest,
-			evalSuite: { ...target.manifest.evalSuite, dataset: manifestDataset },
+			// The dataset is composed from a corpus and the user model may be the
+			// alternate of an A/A pair: neither reaches the copied workspace, and
+			// both are recorded in the run's own provenance instead.
+			evalSuite: { ...target.manifest.evalSuite, dataset: manifestDataset, simulatedUser: undefined },
 		},
 		toolsetHash: target.toolsetHash,
 	});

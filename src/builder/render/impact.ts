@@ -41,6 +41,7 @@ const GRADER_TYPE_OF_CHECK: Record<CandidateFamilyImpact["signature"]["checkCode
 	"required-tool": "tool_called",
 	"output-contains": "output_contains",
 	"output-matches": "output_matches",
+	"output-excludes": "output_excludes",
 	"no-secret": "no_secret",
 	"semantic-rubric": "judge",
 	"reference-exact": "exact",

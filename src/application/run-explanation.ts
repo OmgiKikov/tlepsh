@@ -878,6 +878,7 @@ const CHECK_TITLE_KEY: Record<NonNullable<FailureMode["signature"]["checkCode"]>
 	"required-tool": "mode.title.required-tool",
 	"output-contains": "mode.title.output-contract",
 	"output-matches": "mode.title.output-contract",
+	"output-excludes": "mode.title.output-excludes",
 	"reference-exact": "mode.title.reference-exact",
 	"no-secret": "mode.title.no-secret",
 	"semantic-rubric": "mode.title.semantic-rubric",

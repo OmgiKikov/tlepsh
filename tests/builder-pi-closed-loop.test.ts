@@ -181,20 +181,22 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 								reason: "The exact diff addresses the diagnosed failure",
 							});
 						case 11:
-							// “Check it”: routine, so the candidate is verified against
-							// its baseline and the sealed gate without a dialog.
+							// “Check it”: routine, so the change is measured against its
+							// baseline on the development basket without a dialog. The
+							// exam is not part of a check.
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: SEALED_VERIFICATION_REPETITIONS,
-								reason: "Run the exact development and sealed promotion gates",
+								reason: "Run the exact development gate",
 							});
 						case 12:
-							// “Ship it”: review, promote, adopt and continue behind one
-							// dialog and four unchanged receipts.
+							// “Ship it”: the sealed exam on the checked change, then review,
+							// promote, adopt and continue behind one dialog and four
+							// unchanged receipts.
 							return call(step, "ahde_workbench_decide", {
 								kind: "ship",
 								version: "0.1.0",
-								reason: "Development improved and the sealed guardrail passed",
+								reason: "Development improved; run the exam and release",
 							});
 						case 13: {
 							const shipped = parseToolResult(context, 12);
@@ -314,7 +316,8 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			"target:improvement-authoring",
 			"structured-proposal:proposal-review",
 			"apply-proposal:candidate-verification",
-			"run-current:candidate-review",
+			// A check leaves the change where it was checked; ship runs the exam.
+			"run-current:candidate-verification",
 			// The adopted revision already has matched evidence, so the next cycle
 			// resumes at authoring rather than re-measuring the same baseline.
 			"ship:improvement-authoring",
@@ -341,13 +344,14 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			candidate: {
 				status: "evaluated",
 				development: { gate: { verdict: "improved" } },
-				sealedHoldout: { executed: true, gatePassed: true, gate: { verdict: "pass" } },
+				sealedHoldout: { executed: false, gatePassed: false, gate: null },
 			},
 			development: { verdict: "improved" },
-			sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
+			sealedHoldout: { executed: false, gatePassed: false, verdict: null },
 		});
 		const shipped = observed.find((entry) => entry.kind === "ship")!;
 		expect(shipped.details.result.steps.map((step: { kind: string }) => step.kind)).toEqual([
+			"verify-candidate",
 			"review-candidate",
 			"promote-candidate",
 			"adopt-candidate",

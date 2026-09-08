@@ -1,13 +1,14 @@
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
-import { resolve } from "node:path";
 import { t } from "../../i18n.js";
 import { hashValue } from "../../provenance.js";
 import { WorkbenchStaleDecisionError } from "../errors.js";
 import { exactSame } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
+import { describeEvaluatorConfiguration } from "../../application/configure-evaluators.js";
+import { configureTargetBootstrap, describeTargetBootstrap } from "../../application/target-bootstrap.js";
 
 export async function decideScaffoldTarget(
 	host: DecisionHost,
@@ -59,7 +60,7 @@ export async function decideConfigureTarget(
 	if (!options.resolveTargetModel) {
 		throw new Error("Target model selection requires the trusted host model catalog");
 	}
-	const describe = () => host.dependencies.describeTargetBootstrap({
+	const describe = () => describeTargetBootstrap({
 		targetDir: host.projectDir,
 		stateRoot: host.stateRoot,
 		runsRoot: host.runsRoot,
@@ -72,7 +73,7 @@ export async function decideConfigureTarget(
 	if (!current.target) throw new WorkbenchStaleDecisionError(input.kind);
 	const after = describe();
 	if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-	const result = host.dependencies.configureTargetBootstrap({
+	const result = configureTargetBootstrap({
 		targetDir: host.projectDir,
 		stateRoot: host.stateRoot,
 		runsRoot: host.runsRoot,
@@ -108,7 +109,7 @@ export async function decideConfigureEvaluators(
 	const resolve = options.resolveEvaluatorModel;
 	// Resolved once, before the dialog and again after it: the subject the
 	// human approved must still be the subject that gets committed.
-	const describe = () => host.dependencies.describeEvaluatorConfiguration({
+	const describe = () => describeEvaluatorConfiguration({
 		targetDir: host.projectDir,
 		stateRoot: host.stateRoot,
 		...(input.judge ? { judge: resolve("judge", input.judge) } : {}),

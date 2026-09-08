@@ -193,7 +193,8 @@ const DEFAULT_DEPENDENCIES: TargetScaffoldDependencies = {
 	writeReceipt: (path, receipt) => writeJsonArtifact(path, TargetScaffoldReceiptSchema, receipt, { immutable: true }),
 };
 
-function templateInventory(templateDirInput: string): TargetScaffoldFile[] {
+/** Every file of one packaged template with its exact bytes; the first-build check reads the same list. */
+export function templateInventory(templateDirInput: string): TargetScaffoldFile[] {
 	const templateDir = resolve(templateDirInput);
 	if (!existsSync(templateDir)) throw new Error(`packaged target template is missing: ${templateDir}`);
 	const root = lstatSync(templateDir);
@@ -437,7 +438,7 @@ evalSuite:
 `;
 }
 
-const ADOPTED_AGENTS_MD = `# Агент
+export const ADOPTED_AGENTS_MD = `# Агент
 
 Программа запускается AHDE как дочерний процесс; сам код — ваш.
 
@@ -521,7 +522,7 @@ function assertAdoptableProject(projectDirInput: string): string {
 		if (existsSync(join(projectDir, "evals/development.jsonl"))) loadDataset(projectDir, "evals/development.jsonl");
 		if (existsSync(join(projectDir, "evals/graders.yaml"))) GradersFile.parse(parseYaml(readFileSync(join(projectDir, "evals/graders.yaml"), "utf8")));
 	} catch (error) {
-		throw new Error(`Existing evaluation files are not valid AHDE cases: ${errorMessage(error)}. Keep raw data under imports/ and use ahde corpus inspect; nothing was written.`);
+		throw new Error(`Existing evaluation files are not valid AHDE cases: ${errorMessage(error)}. Keep raw data under imports/ and let the Builder import it; nothing was written.`);
 	}
 	return projectDir;
 }

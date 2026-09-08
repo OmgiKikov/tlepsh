@@ -130,8 +130,8 @@ export function declaredHarnessRoots(declared: readonly string[]): string[] {
  * over these paths — the manifest is the operator's to write — but they never
  * become readable authoring resources: `manifest.yaml` carries model and
  * credential configuration, `evals/` and `imports/` carry the very inputs
- * invariant 5 keeps away from the Target, and `data/` is shape-only by
- * invariant 30.
+ * invariant 5 keeps away from the Target. Data stays outside this editable
+ * resource list; invariant 30 permits a separate read-only committed KB read.
  */
 const RESERVED_HARNESS_PATHS = new Set(["manifest.yaml", ".gitignore"]);
 const RESERVED_HARNESS_ROOTS = ["data", "evals", "imports", "runs", ".ahde", ".git"];

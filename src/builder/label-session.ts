@@ -7,14 +7,13 @@
  * number about the instrument: how far the judge and this human agree, and
  * which way it errs when they do not.
  *
- * Everything durable goes through `runJudgeLabelSession`, so a label written
- * here is byte-identical to one written by `ahde label`: the same file, the
+ * Everything durable goes through `runJudgeLabelSession`,: the same file, the
  * same lineage receipt, the same judge-fingerprint binding, appended before the
  * next question so leaving mid-way keeps every answer already given.
  */
 
 import { t } from "../i18n.js";
-import { listCorpora } from "../corpus.js";
+import { sealedDatasetHashesFor } from "../corpus.js";
 import { isSealedEvalRun, listEvalRunIndexesLenient, type EvalRunRecord } from "../eval.js";
 import { loadTarget } from "../manifest.js";
 import { resolveDevelopmentTargetForEval } from "../application/corpus-target.js";
@@ -94,19 +93,6 @@ export class NoJudgedEvidence extends Error {
 	}
 }
 
-/** Sealed corpus content hashes, so a legacy sealed eval run is refused too. */
-function sealedCorpusHashes(stateRoot: string, projectId: string): Set<string> {
-	try {
-		return new Set(
-			listCorpora({ stateRoot, projectId })
-				.filter((corpus) => corpus.visibility === "sealed")
-				.map((corpus) => corpus.hash),
-		);
-	} catch {
-		return new Set();
-	}
-}
-
 /**
  * The newest development eval run of this Target that a judge actually graded.
  *
@@ -120,7 +106,7 @@ export function newestJudgedEvalRun(options: {
 	projectId: string;
 	targetId?: string | null;
 }): EvalRunRecord | null {
-	const sealed = sealedCorpusHashes(options.stateRoot, options.projectId);
+	const sealed = sealedDatasetHashesFor(options);
 	const candidates = listEvalRunIndexesLenient(options.runsRoot).records
 		.filter((run) => !isSealedEvalRun(run, sealed))
 		// A cheap check is a one-arm re-run of what already failed; it is not the
@@ -233,7 +219,7 @@ export async function runBuilderLabelSession(
 	if (!evalRun) throw new NoJudgedEvidence();
 	const suiteFor = options.suiteFor ?? defaultSuiteFor(options);
 	const suite = suiteFor(evalRun);
-	const sealedDatasetHashes = sealedCorpusHashes(options.stateRoot, options.projectId);
+	const sealedDatasetHashes = sealedDatasetHashesFor(options);
 	const context = {
 		runsRoot: options.runsRoot,
 		stateRoot: options.stateRoot,

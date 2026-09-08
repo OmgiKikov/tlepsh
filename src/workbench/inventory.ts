@@ -39,15 +39,17 @@ import {
 	type CycleContinuationReceipt,
 } from "./cycle-continuation.js";
 import { detectAgentFolder } from "../application/agent-folder-detect.js";
+import { firstBuildLanded, isTargetBuilt } from "../application/first-build.js";
 import { maxKbExamQuestions } from "../application/sealed-synth.js";
 import { targetBootstrapRequired, toolCredentialReadiness } from "../target/readiness.js";
 import { standInFilesLine, standInManifestFields } from "../target/placeholders.js";
-import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
+import { listCorpora, loadCorpus, sealedDatasetHashesFor, type CorpusMetadata } from "../corpus.js";
 import {
 	candidateStatus,
+	promotionGradeVerdictOf,
 	type CandidateRecord,
 } from "../domain/candidate.js";
-import { SEALED_GATE_POLICY, withinInfrastructureBudget } from "../domain/comparison-gate.js";
+import { SEALED_GATE_POLICY, withinInfrastructureBudget, type GateVerdict } from "../domain/comparison-gate.js";
 import { sameModelAsTarget } from "../application/configure-evaluators.js";
 import {
 	isSealedEvalRun,
@@ -201,6 +203,7 @@ function sameApplyDecision(
 }
 
 function listProposals(
+	projectDir: string,
 	stateRoot: string,
 	runsRoot: string,
 	projectId: string,
@@ -334,9 +337,15 @@ function listProposals(
 				}
 			}
 			let appliedVia: string | null = null;
+			// A first build is applied in two steps — the candidate commit, then the
+			// fast-forward of the operator's branch onto it — and a crash between
+			// them leaves the receipt without the landing. Such a proposal reads as
+			// an interrupted apply: the same decision, made again, finishes it.
+			let unlanded = false;
 			if (hasApply) {
 				const receipt = loadBuilderApplyReceipt(runsRoot, runId);
 				appliedVia = receipt.via ?? null;
+				unlanded = receipt.via === "first-build" && !firstBuildLanded(projectDir, receipt.candidateSha);
 				if (
 					receipt.runId !== record.runId ||
 					receipt.proposalSha256 !== record.artifacts.proposal?.sha256 ||
@@ -365,7 +374,7 @@ function listProposals(
 				record,
 				appliedVia,
 				status: hasApply
-					? "applied"
+					? (unlanded ? "apply-pending" : "applied")
 					: hasDiscard
 						? "discarded"
 						: decisionClaim?.decision === "discard"
@@ -794,9 +803,10 @@ export function loadWorkbenchInventory(options: {
 			);
 		}
 	}
-	const sealedHashes = new Set(corpora.filter((corpus) => corpus.visibility === "sealed").map((corpus) => corpus.hash));
 	let developmentEvals: EvalRunRecord[] = [];
 	try {
+		// The display inventory may have failed above; unknown visibility must hide all evidence.
+		const sealedHashes = sealedDatasetHashesFor(options);
 		const listed = listEvalRunIndexesLenient(options.runsRoot);
 		if (listed.invalid.length > 0) {
 			warnings.push(
@@ -823,6 +833,7 @@ export function loadWorkbenchInventory(options: {
 	const focus = loadWorkbenchFocus(options.stateRoot, options.projectId, options.now);
 	const listedCandidates = listCandidates(options.runsRoot, warnings, integrityBlockers);
 	const proposals = listProposals(
+		options.projectDir,
 		options.stateRoot,
 		options.runsRoot,
 		options.projectId,
@@ -989,11 +1000,52 @@ export function openTerminalCandidatesOf(inventory: WorkbenchInventory): Candida
  * release candidate. Keeping it out of the release state machine prevents an
  * `evaluated` preview from advertising promotion before the sealed exam ran.
  */
-export function isAutomatedDevelopmentCandidate(candidate: CandidateRecord): boolean {
+/**
+ * A check: the applied change measured on the development basket and nothing
+ * else — by the operator's own “check”, or as a hypothesis the loop or the
+ * search measured. The exam it still owes is what `ship` runs.
+ */
+export function isDevelopmentCheckCandidate(candidate: CandidateRecord): boolean {
 	if (candidateStatus(candidate) !== "evaluated" || candidate.origin.kind !== "applied-builder") return false;
-	if (!candidate.origin.application.via) return false;
 	const evaluated = candidate.events.find((event) => event.type === "evaluated");
 	return evaluated?.type === "evaluated" && evaluated.evaluation.sealedHoldout == null;
+}
+
+/**
+ * The checks that still owe an exam: not abandoned, and not already carried
+ * into a release verification of the same lineage (a design, or the proposal).
+ */
+export function openDevelopmentChecks(inventory: WorkbenchInventory): CandidateRecord[] {
+	const projectCandidates = inventory.candidates.filter((candidate) => candidate.projectId === inventory.projectId);
+	const lineageOf = (candidate: CandidateRecord): string =>
+		candidate.origin.kind === "applied-builder" && candidate.origin.experimentDesign
+			? `design:${candidate.origin.experimentDesign.sha256}`
+			: candidate.origin.kind === "applied-builder" ? `builder:${candidate.origin.builderRunId}` : "";
+	const releaseLineages = new Set(projectCandidates
+		.filter((candidate) => !isDevelopmentCheckCandidate(candidate) &&
+			!inventory.abandonedCandidates.has(candidate.candidateId) && candidate.origin.kind === "applied-builder")
+		.map(lineageOf));
+	return projectCandidates.filter((candidate) =>
+		isDevelopmentCheckCandidate(candidate) &&
+		!inventory.abandonedCandidates.has(candidate.candidateId) &&
+		!releaseLineages.has(lineageOf(candidate))
+	);
+}
+
+/** The one open check at `candidate-verification`, projected for the view's next step. */
+function checkedChangeOf(inventory: WorkbenchInventory, stage: WorkbenchStage): WorkbenchView["checkedChange"] {
+	if (stage !== "candidate-verification") return undefined;
+	const checks = openDevelopmentChecks(inventory);
+	const chosen = selectedOrUniqueId(checks, inventory.validFocus.candidate?.id, (candidate) => candidate.candidateId);
+	if (!chosen || chosen === "ambiguous") return undefined;
+	const candidate = checks.find((item) => item.candidateId === chosen)!;
+	const evaluated = candidate.events.find((event) => event.type === "evaluated");
+	const development = evaluated?.type === "evaluated" ? evaluated.evaluation.development : null;
+	return {
+		candidateId: candidate.candidateId,
+		verdict: (promotionGradeVerdictOf(development?.comparison) as GateVerdict | null) ?? null,
+		brokenGuards: development?.regressionGuards?.broken.length ?? 0,
+	};
 }
 
 /**
@@ -1177,46 +1229,33 @@ function stageFor(
 	}
 
 	const projectCandidates = inventory.candidates.filter((candidate) => candidate.projectId === inventory.projectId);
-	const releaseLineages = new Set(projectCandidates
-		.filter((candidate) => !isAutomatedDevelopmentCandidate(candidate) &&
-			!inventory.abandonedCandidates.has(candidate.candidateId) && candidate.origin.kind === "applied-builder")
-		.map((candidate) => candidate.origin.kind === "applied-builder" && candidate.origin.experimentDesign
-			? `design:${candidate.origin.experimentDesign.sha256}`
-			: candidate.origin.kind === "applied-builder" ? `builder:${candidate.origin.builderRunId}` : ""));
-	const automatedDevelopmentCandidates = projectCandidates.filter((candidate) =>
-		isAutomatedDevelopmentCandidate(candidate) &&
-		!inventory.abandonedCandidates.has(candidate.candidateId) &&
-		candidate.origin.kind === "applied-builder" &&
-		!releaseLineages.has(candidate.origin.experimentDesign
-			? `design:${candidate.origin.experimentDesign.sha256}`
-			: `builder:${candidate.origin.builderRunId}`)
-	);
+	const openChecks = openDevelopmentChecks(inventory);
 	const activeCandidates = projectCandidates.filter((candidate) =>
 		!["promoted", "rejected"].includes(candidateStatus(candidate)) &&
 		!inventory.abandonedCandidates.has(candidate.candidateId) &&
-		!isAutomatedDevelopmentCandidate(candidate)
+		!isDevelopmentCheckCandidate(candidate)
 	);
 	if (activeCandidates.length === 0) {
-		const automatedChoice = selectedOrUniqueId(
-			automatedDevelopmentCandidates,
+		const checkChoice = selectedOrUniqueId(
+			openChecks,
 			inventory.validFocus.candidate?.id,
 			(candidate) => candidate.candidateId,
 		);
-		if (automatedChoice === "ambiguous") {
+		if (checkChoice === "ambiguous") {
 			return {
 				stage: "selection-required",
-				headline: "Choose which measured hypothesis should enter release verification.",
+				headline: "Choose which checked change should take the exam.",
 				blockers: [blocked(
-					`${automatedDevelopmentCandidates.length} automated hypotheses have development evidence; only the selected one may open the sealed exam.`,
+					`${openChecks.length} checked changes have development evidence; only the selected one may open the sealed exam.`,
 					"blocker.candidates-ambiguous",
-					{ candidates: plural(automatedDevelopmentCandidates.length, "candidate") },
+					{ candidates: plural(openChecks.length, "candidate") },
 				)],
 			};
 		}
-		if (automatedChoice) {
+		if (checkChoice) {
 			return {
 				stage: "candidate-verification",
-				headline: "The selected hypothesis passed development evidence; run the sealed release verification.",
+				headline: "The change is checked on the development basket; ship it to run the exam and release.",
 				blockers: [],
 			};
 		}
@@ -1285,8 +1324,9 @@ function stageFor(
 	}
 
 	const applied = inventory.proposals.filter((proposal) => proposal.status === "applied");
+	// A first build is already the active Target and never gets a candidate.
 	const appliedWithoutCandidate = applied.filter((proposal) =>
-		proposal.appliedVia !== "proposal-search" &&
+		proposal.appliedVia !== "proposal-search" && proposal.appliedVia !== "first-build" &&
 		!projectCandidates.some((candidate) =>
 			candidate.origin.kind === "applied-builder" &&
 			candidate.origin.builderRunId === proposal.record.runId &&
@@ -1504,7 +1544,7 @@ function calibrationOf(inventory: WorkbenchInventory): WorkbenchCalibrationProje
 	if (!gitSha) return null;
 	for (const record of inventory.calibrations) {
 		if (record.baseline.sha !== gitSha) continue;
-		const projection = calibrationProjection(record);
+		const projection = calibrationProjection(record, inventory.runsRoot, inventory.target?.manifest.evalSuite.simulatedUserAlternate ?? null);
 		if (projection) return projection;
 	}
 	return null;
@@ -1558,6 +1598,7 @@ export function deriveWorkbenchView(
 				status: targetBootstrapRequired(inventory.target.manifest) ? "bootstrap-required" : "ready",
 				id: inventory.target.manifest.id,
 				gitSha: inventory.target.gitSha,
+				built: isTargetBuilt(inventory.target),
 				model: targetModelSummary(inventory, env),
 				evaluators: evaluatorSummaries(inventory, env),
 				// The projection stays the two booleans it always was; the case count
@@ -1609,6 +1650,7 @@ export function deriveWorkbenchView(
 		],
 		blockers: state.blockers.map((entry) => entry.text),
 		blockerReasons: state.blockers.map((entry) => entry.reason),
+		...(checkedChangeOf(inventory, state.stage) ? { checkedChange: checkedChangeOf(inventory, state.stage) } : {}),
 		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
 		shippingReadiness: {
 			sealedHoldout: inventory.sealedHoldoutReadiness,

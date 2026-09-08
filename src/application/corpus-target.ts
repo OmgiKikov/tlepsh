@@ -167,6 +167,30 @@ export function targetWithDevelopmentCorpus(target: ResolvedTarget, corpus: Load
 	return targetWithCorpus(target, corpus, "development");
 }
 
+/**
+ * The same resolved Target with a different model playing the user.
+ *
+ * Everything else is left exactly as it is — the tasks, the dataset hash and
+ * the suite hash included — because this is deliberately not a new measurement
+ * surface. The A/A simulator-noise arm asks what changes when only the user
+ * model changes, and it can only ask that while every other axis is the one the
+ * baseline arm ran on. The swap is still visible where it belongs: the run's
+ * provenance carries the model that actually played the user, so the pair
+ * differs on `eval.simulatedUser` and on nothing else.
+ */
+export function targetWithSimulatedUser(
+	target: ResolvedTarget,
+	model: NonNullable<TargetManifest["evalSuite"]["simulatedUser"]>,
+): ResolvedTarget {
+	return {
+		...target,
+		manifest: {
+			...target.manifest,
+			evalSuite: { ...target.manifest.evalSuite, simulatedUser: model },
+		},
+	};
+}
+
 export function targetWithSealedCorpus(target: ResolvedTarget, corpus: LoadedCorpus): ResolvedTarget {
 	if (corpus.metadata.visibility !== "sealed") {
 		throw new Error(

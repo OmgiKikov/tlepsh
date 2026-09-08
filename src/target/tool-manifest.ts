@@ -3,7 +3,6 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { canonicalJson, hashFile, hashValue } from "../provenance.js";
-import type { ContainerPolicy } from "./container-backend.js";
 import { isRecord } from "../util.js";
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
@@ -88,8 +87,6 @@ export interface TargetToolPolicyEnvelope {
 	environmentAllowlist: string[];
 	network: "deny" | "allow";
 	sandbox: "required" | "best-effort" | "off";
-	/** Present when the Target declares `execution.container`; selects the container backend. */
-	container?: ContainerPolicy;
 }
 
 const ToolDirectoryRelativePathSchema = z

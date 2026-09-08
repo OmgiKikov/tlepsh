@@ -204,8 +204,6 @@ details[open]>summary::before{content:"▾ "}
 .sample-checks li{overflow-wrap:anywhere;font-size:13px}
 .sample-checks p{font-size:12px;margin:4px 0 0;color:var(--muted)}
 .sample-link{display:inline-block;margin-top:12px;font-size:13px;font-weight:600}
-.replay-link{display:inline-flex;align-items:center;gap:10px;padding:11px 16px;border:1px solid var(--accent);border-radius:8px;background:var(--accent-soft);color:var(--accent);font-size:14px;font-weight:650;margin:12px 0;text-decoration:none}
-.replay-link:hover{filter:brightness(1.08);text-decoration:none}
 .finding{padding:18px 22px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);font-size:17px;margin-bottom:14px}
 .finding p:last-child{margin-bottom:0}
 .historical pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.7 var(--mono)}
@@ -562,7 +560,7 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	const run = model.run;
 	const heading = conversationTitle(model.input, t("evidence.noInput"));
 	const parent = model.diagnosisAvailable === false
-		? model.candidateId ? { label: t("evidence.replayOverview"), href: `/candidates/${encodeURIComponent(model.candidateId)}` } : { label: t("evidence.brand"), href: "/" }
+		? model.candidateId ? { label: t("evidence.comparisonOverview"), href: `/candidates/${encodeURIComponent(model.candidateId)}` } : { label: t("evidence.brand"), href: "/" }
 		: { label: t("conversation.openEvaluation"), href: `/evals/${encodeURIComponent(model.evalRunId)}?run=${encodeURIComponent(run.runId)}#inspector` };
 	const body = `
 <div class="head">
@@ -704,7 +702,6 @@ function renderCompareExamples(model: ComparePageModel): string {
 		return `<article class="example">
 <div class="example-header"><div class="rowline"><h3>${h(conversationTitle(example.baseline?.input ?? example.candidate?.input, t("conversation.number", { number: index + 1 })))}</h3><span class="${invalid || example.exclusion ? "same" : direction === "regressed" ? "down" : direction === "improved" ? "up" : "same"}">${invalid ? h(t("evidence.notComparable")) : example.exclusion ? h(t(`evidence.excluded-${example.exclusion}`)) : `${h(t(`evidence.${direction}`))} · ${h(points(example.scoreDelta))}`}</span></div>
 <details class="metadata"><summary>${h(t("evidence.caseInput"))}</summary><p>${h(example.baseline?.input ?? example.candidate?.input ?? t("evidence.noInput"))}</p><code>${h(example.taskId)}</code></details>
-${example.baseline && example.candidate ? `<a class="replay-link" href="/candidates/${encodeURIComponent(model.candidateId)}/replay?run=${encodeURIComponent(example.baseline.runId)}">${h(t("evidence.replayOpen"))} →</a>` : ""}
 <div class="sub">${invalid ? h(t("evidence.invalidComparison")) : example.exclusion ? h(t("evidence.excludedNote")) : `${h(t("evidence.changedScore"))}: ${percent(example.baselineScore)} → ${percent(example.candidateScore)}`}</div></div>
 ${renderCaseExpectation(example.baseline?.reading, example.candidate?.reading)}
 <div class="pair">${renderCompareArm(example.baseline, t("evidence.baseline"))}${renderCompareArm(example.candidate, t("evidence.candidate"))}</div>
@@ -729,7 +726,6 @@ export function renderComparePage(model: ComparePageModel): string {
 		<div class="sub">${h(model.targetId)}</div>
 		<h1>${h(t("evidence.comparison"))}</h1>
 		<p class="lead">${h(t("evidence.comparisonIntro"))}</p>
-		${model.examples.some(example => example.baseline && example.candidate) ? `<a class="replay-link" href="/candidates/${encodeURIComponent(model.candidateId)}/replay">${h(t("evidence.replayOpen"))} →</a>` : ""}
 	</div>
 	<div class="pills"><span class="tag">${h(candidateStatusLabel(model.status))}</span></div>
 </div>

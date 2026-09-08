@@ -20,13 +20,13 @@ contract; this page keeps the next product work separate from acceptance evidenc
   costs rather than hiding them.
 - The terminal conversation is the primary interface. The optional localhost
   Evidence explorer shows verified conversations, executed actions, before/after
-  answers and uncertainty. `serve` is the existing HTTP integration boundary.
+  answers and uncertainty. The CLI is the existing integration boundary.
 - Natural requests and shortcuts share progress, cancellation and completion.
   Each model turn receives fresh guidance; reopening `ahde` resumes the project's
   validated conversation without restoring old approvals or restarting spend.
 - Named starters (`python-support`, `pi-support`, `pi-basic`) resolve from any
   directory. Clean package acceptance checks the installed command, and CI now
-  defines macOS and Linux lanes with required Linux sandbox/container checks.
+  defines macOS and Linux lanes with a required Linux sandbox check.
 
 Two paid synthetic improvement cycles completed through the production Workbench.
 The [acceptance record](reviews/2026-09-05-live-improvement-acceptance.md) preserves
@@ -44,24 +44,20 @@ correctness. The newly added Linux CI lane still needs its own green runner resu
    Target, judge or simulated user; show a usable next step for provider errors,
    interruptions and expired confirmations. Exercise restart during each stage
    with actual providers and runtimes.
-3. **Finish the integration guide.** Publish one small working `serve` client:
-   view, submit, decision, confirmation, event subscription and reconnection.
-   Define retry behavior and how a client discovers the result of an operation
-   when its original HTTP response was lost.
 
 ## Then: prove it on real work
 
-4. **A bounded operating matrix.** Keep macOS, Linux/bwrap and actual Docker
-   acceptance green. Test timeout, cancellation, unavailable providers and recovery,
+3. **A bounded operating matrix.** Keep macOS and Linux/bwrap acceptance green.
+   Test timeout, cancellation, unavailable providers and recovery,
    then document the supported combinations with evidence from those runs.
-5. **An exam worth trusting.** Show coverage of the approved Spec and gaps in the
+4. **An exam worth trusting.** Show coverage of the approved Spec and gaps in the
    cases; make human judge calibration easy. Add checks for trivial, duplicated
    or unsolvable generated cases before claiming broader reliability.
-6. **Traffic into regression cases.** Extend the existing import path with a local
+5. **Traffic into regression cases.** Extend the existing import path with a local
    endpoint or adapter that records a conversation receipt and lets the operator
    attach feedback to that exact interaction. Collection remains separate from
    evaluation evidence and requires deliberate publication into the test basket.
-7. **Choose model and harness together.** Compare the same harness on two Target
+6. **Choose model and harness together.** Compare the same harness on two Target
    models using the same cases, and explain the quality, cost and latency tradeoff.
    Track whether a useful change transfers to another model or Target.
 
@@ -80,6 +76,5 @@ interface independent of the Builder's runtime.
 ## Non-goals
 
 Training or changing weights; autonomous promotion or deployment; a hosted
-multi-user control plane; Windows; a browser Builder/Studio. External `serve`
-clients use the same evidence and host-owned release authority as the terminal
-Builder. The local Evidence explorer remains read-only.
+multi-user control plane; Windows; a browser Builder/Studio. The local Evidence
+explorer remains read-only.

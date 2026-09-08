@@ -1,10 +1,12 @@
 import { advanceShipConsent, assertCompositeFresh, compositeGate, testingConsent, shipConsent, matchesSpecApproval, matchesCorpusPublication, matchesCandidateDecision, matchesEvaluatorConfiguration, matchesPublishedRun } from "./composite-consent.js";
 import { resolveRunCurrent } from "./run-resolution.js";
-import { inspectSelectedDevelopmentRun, inspectModelExperimentRun } from "./run-inspection.js";
+import { candidateCases } from "./candidate-cases.js";
+import { captureCorpusSourceBinding, verifyCaseSource } from "../application/corpus-source.js";
+import { assertCriticApproves, corpusSourceFreshness, loadCorpusCritic } from "./corpus-publication.js";
+import { coverageDensity } from "../domain/case-coverage.js";
+import { inspectSelectedDevelopmentRun } from "./run-inspection.js";
 import { currentFindingFromInventory } from "./current-finding.js";
-import { planModelExperiment, runModelExperiment, loadModelExperiment, listModelExperiments, loadModelExperimentEval, modelExperimentDirectory, describeModelChange, applyModelChange } from "../application/model-experiment.js";
-import { decideModelExperiment, decideAcceptModel } from "./decisions/model-experiment.js";
-import { workbenchNext } from "./next-actions.js";
+import { diagnosisReadingOf, workbenchNext } from "./next-actions.js";
 import { isSubCent } from "../measurement.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
@@ -17,10 +19,7 @@ import {
 	writeJsonArtifact,
 } from "../storage/artifacts.js";
 import {
-	approveBuilderSpecDraft,
-	describeDevelopmentCorpusPublication,
 	describeSpecDraftApproval,
-	loadDevelopmentCorpusPublicationReceipt,
 	publishBuilderDevelopmentCorpus,
 	recordBuilderAuthoredProposal,
 	saveBuilderSpecDraft,
@@ -34,7 +33,6 @@ import { importBuilderCorpusDraft } from "../application/builder-corpus-import.j
 import {
 	compileDatasetCases,
 	datasetHoldoutInForce,
-	ingestDataset,
 	inspectDatasetFile,
 	type DatasetHoldoutSpec,
 } from "../application/dataset-ingest.js";
@@ -47,8 +45,6 @@ import {
 import {
 	planSealedSynthesis,
 	sealedExamGeneration,
-	sealedSynthReviewPath,
-	synthesizeSealedCorpus,
 } from "../application/sealed-synth.js";
 import { resolveDevelopmentFailureOperations } from "../application/builder-regression-case.js";
 import { addProductionFailureCase } from "../application/production-failure-case.js";
@@ -95,10 +91,6 @@ import { missingEnvNames } from "../env.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
-	configureTargetBootstrap,
-	describeTargetBootstrap,
-} from "../application/target-bootstrap.js";
-import {
 	configureEvaluators,
 	describeEvaluatorConfiguration,
 } from "../application/configure-evaluators.js";
@@ -110,10 +102,6 @@ import {
 } from "../application/target-scaffold.js";
 import { detectAgentFolder } from "../application/agent-folder-detect.js";
 import {
-	describeBuilderProposalDiscard,
-	discardBuilderProposal,
-} from "../application/builder-discard.js";
-import {
 	CANDIDATE_SCOPE_POLICY,
 	candidateScopeFor,
 	runCandidateExperiment,
@@ -124,74 +112,49 @@ import {
 } from "../application/cheap-check.js";
 import { buildPromotionRegressionGuards } from "../application/regression-guards.js";
 import {
-	abandonImprovementLoop,
-	IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
-	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
-	improvementLoopGate,
-	listUnfinishedImprovementLoops,
-	plannedImprovementExecutions,
-	recordedBuilderProposalAuthor,
-	renderImprovementLoopTable,
 	runImprovementLoop,
-	UnfinishedImprovementLoopError,
 	type ImprovementProposalAuthor,
 } from "../application/improvement-loop.js";
 import type { PreparedImprovementAuthor } from "../application/improvement-author.js";
 import {
-	decideCandidateRejection,
-	promoteReviewedCandidate,
-	reviewCandidate,
-} from "../application/candidate-review.js";
-import {
 	assertGradersRunnable,
 	draftWorldWarnings,
-	resolveScoredCasesForEval,
 	targetToolContext,
-	targetWithDevelopmentCorpus,
 } from "../application/corpus-target.js";
 import {
-	compileRegradeDiff,
-	estimateRegradeJudgeSpend,
-	planRegradeGraders,
 	projectCandidateRegrade,
 	resolveRegradeSource,
 	type CandidateRegradeProjection,
-	type RegradeDiff,
 } from "../application/regrade-decision.js";
 import { regradeEvalRun } from "../regrade.js";
 import {
-	applyBuilderProposal,
 	loadBuilderApplyReceipt,
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
 import {
 	compileImprovementBrief,
 	deriveEvidenceLinkedProposalSelection,
+	ProposalIneligibleError,
 	type ImprovementBrief,
 } from "../application/improvement-brief.js";
-import { failureModeReading } from "../application/run-explanation.js";
+import { failureModeReading, judgeAbstentions } from "../application/run-explanation.js";
 import type { CandidateProposal, ProposalPredictionInput } from "../builder/proposal-contract.js";
 import {
-	listCorpora,
 	loadCorpus,
-	type CorpusMetadata,
-	type CorpusRef,
 	type CorpusTask,
 } from "../corpus.js";
 import { redactTraceText } from "../trace.js";
-import { diagnoseEvalRun } from "../diagnosis.js";
-import { candidateStatus } from "../domain/candidate.js";
+import { diagnoseEvalRun, loadDiagnosis } from "../diagnosis.js";
+import { candidateStatus, promotionGradeVerdictOf } from "../domain/candidate.js";
 import {
 	DEFAULT_EVAL_JOBS,
 	defaultEvalJobs,
-	isSealedEvalRun,
-	loadEvalRun,
 	loadVerifiedEvalRun,
 	readEvalRunIndex,
 	runSuite,
 	type EvalRunRecord,
 } from "../eval.js";
-import { loadTarget, type ResolvedTarget } from "../manifest.js";
+import { loadTarget } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import {
 	loadApprovedSpec,
@@ -205,10 +168,8 @@ import { judgeCalibrationOffer, judgeEvidenceCalibration } from "../application/
 import { formatJudgeAgreementSummary } from "../domain/judge-agreement.js";
 import {
 	adoptTargetCandidate,
-	describeTargetAdoption,
 } from "../application/target-adoption.js";
 import {
-	clearWorkbenchFocus,
 	loadWorkbenchFocus,
 	saveWorkbenchFocus,
 	selectWorkbenchFocus,
@@ -216,21 +177,19 @@ import {
 } from "./focus.js";
 import {
 	loadWorkbenchCorpusPublication,
-	recordWorkbenchCorpusPublication,
 } from "./corpus-publication.js";
-import { recordCandidateAbandonment } from "./candidate-abandonment.js";
 import {
-	describeCycleContinuation,
 	recordCycleContinuation,
 } from "./cycle-continuation.js";
 import {
 	WorkbenchDecisionDeclinedError,
 	WorkbenchSelectionRequiredError,
 	WorkbenchStaleDecisionError,
+	WorkbenchTypedRefusalError,
 } from "./errors.js";
 import {
 	deriveWorkbenchView,
-	isAutomatedDevelopmentCandidate,
+	isDevelopmentCheckCandidate,
 	loadWorkbenchInventory,
 	withWorkbenchFocus,
 	openTerminalCandidatesOf,
@@ -255,7 +214,7 @@ import {
 	requireSpecDraft,
 	resolveOne,
 } from "./resolution.js";
-import { calibrationProjection, DEFAULT_REPETITIONS } from "./calibration.js";
+import { DEFAULT_REPETITIONS } from "./calibration.js";
 import {
 	assertWorkbenchDecisionStage,
 	assertWorkshopStage,
@@ -299,17 +258,17 @@ import {
 	type WorkbenchTargetDetail,
 	type WorkbenchTargetedModeTitles,
 	type WorkbenchTurn,
+	type WorkbenchDiagnosisReading,
 	type WorkbenchView,
 	type WorkbenchViewQuery,
 	type WorkbenchCheapCheckProjection,
 	type WorkbenchRegressionGuardsProjection,
-	type WorkbenchVerifyCandidateResult,
 	type PersistedWorkbenchWorkshop,
 	type WorkbenchWorkshopSummary,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { decideScaffoldTarget, decideWrapTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
-import { decideApproveSpec, decidePublishCorpus, decideImportDataset, decideGenerateHoldout } from "./decisions/corpus.js";
+import { decideApproveSpec, decidePublishCorpus, decideImportDataset, decideGenerateHoldout, decideCritiqueCorpus } from "./decisions/corpus.js";
 import { decideRunEval, decideCalibrate, decideRegrade, judgeAgreementOfEval } from "./decisions/evaluation.js";
 import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal.js";
 import { decideVerifyCandidate, decideAbandonCandidate } from "./decisions/candidate.js";
@@ -318,6 +277,7 @@ import { decideImprove } from "./decisions/improve.js";
 import { decideRunCurrent } from "./decisions/run-current.js";
 import type { DecisionContext } from "./decisions/shared.js";
 import { shortSha } from "../builder/render/format.js";
+import { basketReadingOf } from "./basket.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 // Six, not three: with the proposal-eligible modes sorted first this is the
@@ -388,52 +348,23 @@ export interface AhdeWorkbenchDependencies {
 	describeTargetWrap: typeof describeTargetWrap;
 	applyTargetWrap: typeof applyTargetWrap;
 	detectAgentFolder: typeof detectAgentFolder;
-	describeTargetBootstrap: typeof describeTargetBootstrap;
-	configureTargetBootstrap: typeof configureTargetBootstrap;
-	describeEvaluatorConfiguration: typeof describeEvaluatorConfiguration;
 	configureEvaluators: typeof configureEvaluators;
-	saveSpecDraft: typeof saveBuilderSpecDraft;
 	describeSpecApproval: typeof describeSpecDraftApproval;
-	approveSpecDraft: typeof approveBuilderSpecDraft;
-	describeCorpusPublication: typeof describeDevelopmentCorpusPublication;
 	publishDevelopmentCorpus: typeof publishBuilderDevelopmentCorpus;
-	createCorpusDraft: typeof createBuilderCorpusDraft;
-	importCorpusDraft: typeof importBuilderCorpusDraft;
-	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
-	addProductionFailureCase: typeof addProductionFailureCase;
-	/** The host reads `imports/`; the Builder only ever reads what these return. */
-	inspectDataset: typeof inspectDatasetFile;
-	compileDatasetCases: typeof compileDatasetCases;
-	saveDatasetRecipe: typeof saveDatasetRecipeSubmission;
-	ingestDataset: typeof ingestDataset;
 	/**
 	 * The exam the judge writes, in two halves: what it would be, so a human can
 	 * approve a price and a model before a token is spent, and doing it. Neither
 	 * half returns a case; the second one writes the sealed corpus itself.
 	 */
 	planSealedSynthesis: typeof planSealedSynthesis;
-	synthesizeSealedCorpus: typeof synthesizeSealedCorpus;
-	sealedSynthReviewPath: typeof sealedSynthReviewPath;
-	compileHarnessProposal: (input: CompileHarnessAuthoringInput) => CandidateProposal;
 	recordProposal: typeof recordBuilderAuthoredProposal;
 	runSuite: typeof runSuite;
 	/** A/A calibration of one exact revision; never a promotion path. */
 	runCalibration: typeof runCandidateExperiment;
-	planModelExperiment: typeof planModelExperiment;
-	runModelExperiment: typeof runModelExperiment;
-	describeModelChange: typeof describeModelChange;
-	applyModelChange: typeof applyModelChange;
 	/** Re-score recorded traces with a revised rubric; never a Target call. */
 	regradeEvalRun: typeof regradeEvalRun;
-	diagnoseEval: typeof diagnoseEvalRun;
-	compileImprovementBrief: (runsRoot: string, diagnosis: ReturnType<typeof diagnoseEvalRun>) => ImprovementBrief;
 	inspectTargetAuthoringContext: typeof inspectTargetAuthoringContext;
-	/** What was already tried: the read side of this project's candidate records. */
-	compileExperimentHistory: typeof compileExperimentHistory;
 	evidenceLink: (record: EvalRunRecord) => WorkbenchEvidenceLink | null | Promise<WorkbenchEvidenceLink | null>;
-	applyProposal: typeof applyBuilderProposal;
-	describeProposalDiscard: typeof describeBuilderProposalDiscard;
-	discardProposal: typeof discardBuilderProposal;
 	runAppliedCandidate: typeof runAppliedBuilderCandidate;
 	/** The cheap screen that runs before a verification is paid for. */
 	runCheapCheck: typeof runCheapCheck;
@@ -447,12 +378,7 @@ export interface AhdeWorkbenchDependencies {
 	authorImprovementProposal?: ImprovementProposalAuthor;
 	/** Resolve/freeze a host-owned model before consent; preparation must not run inference. */
 	prepareImprovementAuthor?: () => PreparedImprovementAuthor | null | Promise<PreparedImprovementAuthor | null>;
-	reviewCandidate: typeof reviewCandidate;
-	promoteCandidate: typeof promoteReviewedCandidate;
-	rejectCandidate: typeof decideCandidateRejection;
-	describeTargetAdoption: typeof describeTargetAdoption;
 	adoptTargetCandidate: typeof adoptTargetCandidate;
-	describeCycleContinuation: typeof describeCycleContinuation;
 	recordCycleContinuation: typeof recordCycleContinuation;
 	/** Bounded, host-only candidate impact projection; failures degrade to an explicit reason. */
 	candidateImpact: (input: {
@@ -477,53 +403,21 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	describeTargetWrap,
 	applyTargetWrap,
 	detectAgentFolder,
-	describeTargetBootstrap,
-	configureTargetBootstrap,
-	describeEvaluatorConfiguration,
 	configureEvaluators,
-	saveSpecDraft: saveBuilderSpecDraft,
 	describeSpecApproval: describeSpecDraftApproval,
-	approveSpecDraft: approveBuilderSpecDraft,
-	describeCorpusPublication: describeDevelopmentCorpusPublication,
 	publishDevelopmentCorpus: publishBuilderDevelopmentCorpus,
-	createCorpusDraft: createBuilderCorpusDraft,
-	importCorpusDraft: importBuilderCorpusDraft,
-	reviseCorpusDraft: reviseBuilderCorpusDraft,
-	addProductionFailureCase,
-	inspectDataset: inspectDatasetFile,
-	compileDatasetCases,
-	saveDatasetRecipe: saveDatasetRecipeSubmission,
-	ingestDataset,
 	planSealedSynthesis,
-	synthesizeSealedCorpus,
-	sealedSynthReviewPath,
-	compileHarnessProposal: compileHarnessAuthoringProposal,
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
 	runCalibration: runCandidateExperiment,
-	planModelExperiment,
-	runModelExperiment,
-	describeModelChange,
-	applyModelChange,
 	regradeEvalRun,
-	diagnoseEval: diagnoseEvalRun,
-	compileImprovementBrief,
 	inspectTargetAuthoringContext,
-	compileExperimentHistory,
 	evidenceLink: () => null,
-	applyProposal: applyBuilderProposal,
-	describeProposalDiscard: describeBuilderProposalDiscard,
-	discardProposal: discardBuilderProposal,
 	runAppliedCandidate: runAppliedBuilderCandidate,
 	runCheapCheck,
 	buildPromotionGuards: buildPromotionRegressionGuards,
 	runImprovementLoop,
-	reviewCandidate,
-	promoteCandidate: promoteReviewedCandidate,
-	rejectCandidate: decideCandidateRejection,
-	describeTargetAdoption,
 	adoptTargetCandidate,
-	describeCycleContinuation,
 	recordCycleContinuation,
 	candidateImpact: ({ runsRoot, stateRoot, candidate }) => ({
 		available: true,
@@ -699,6 +593,7 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 				...(grader.argsContains !== undefined ? { argsContains: datasetText(grader.argsContains) } : {}),
 			};
 		case "output_contains":
+		case "output_excludes":
 			return { ...grader, ...named, text: datasetText(grader.text) };
 		case "output_matches":
 			return { ...grader, ...named, pattern: datasetText(grader.pattern) };
@@ -772,6 +667,7 @@ export function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
 			? {
 				goal: datasetText(task.simulatedUser.goal, 400),
 				persona: task.simulatedUser.persona === undefined ? null : datasetText(task.simulatedUser.persona, 400),
+				knownFacts: task.simulatedUser.knownFacts === undefined ? null : datasetText(task.simulatedUser.knownFacts, 400),
 				maxTurns: task.simulatedUser.maxTurns,
 				stopWhen: task.simulatedUser.stopWhen === undefined ? null : datasetText(task.simulatedUser.stopWhen, 200),
 			}
@@ -859,6 +755,9 @@ export class AhdeWorkbench {
 	/** At most one open workshop per Builder conversation; it dies with its proposal. */
 	private workshop: BuilderWorkshop | null = null;
 
+	/** One reading per immutable evaluation; the summary view is drawn after every tool call. */
+	private readonly diagnosisReadings = new Map<string, WorkbenchDiagnosisReading>();
+
 	constructor(options: AhdeWorkbenchOptions) {
 		this.projectDir = canonicalPath(options.projectDir);
 		this.stateRoot = canonicalPath(options.stateRoot);
@@ -903,9 +802,16 @@ export class AhdeWorkbench {
 	candidateView(
 		candidate: CandidateRecord,
 		developmentEvals: WorkbenchInventory["developmentEvals"],
+		casesOffset = 0,
 	): WorkbenchCandidateSummary {
 		const evaluated = candidate.events.find((event) => event.type === "evaluated");
 		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
+		// The inventory also classifies legacy runs by sealed corpus hashes. A
+		// candidate record must not reopen an arm that inventory withheld.
+		const arms = evaluated.evaluation.development;
+		if (![arms.baseline.evalRunId, arms.candidate.evalRunId].every((id) => developmentEvals.some((run) => run.evalRunId === id))) {
+			return { ...candidateSummary(candidate), cases: null };
+		}
 		const regraded = this.candidateRegrade(evaluated.evaluation.development, developmentEvals);
 		// Why the exam is the size it is: 20 cases ordered, one a duplicate of a
 		// development case, 19 sealed. Read off the receipt this project wrote,
@@ -915,8 +821,11 @@ export class AhdeWorkbench {
 			candidate.projectId,
 			evaluated.evaluation.sealedHoldout?.corpus?.id ?? null,
 		);
-		const withExam = (summary: WorkbenchCandidateSummary): WorkbenchCandidateSummary =>
-			generation === null ? summary : { ...summary, sealedHoldout: { ...summary.sealedHoldout, generation } };
+		const cases = candidateCases(this.runsRoot, evaluated.evaluation.development, casesOffset);
+		const withExam = (summary: WorkbenchCandidateSummary): WorkbenchCandidateSummary => ({
+			...(generation === null ? summary : { ...summary, sealedHoldout: { ...summary.sealedHoldout, generation } }),
+			...cases,
+		});
 		try {
 			const approvedSpec = candidate.origin.kind === "applied-builder"
 				? {
@@ -1010,8 +919,8 @@ export class AhdeWorkbench {
 		const basis = review.evidenceBasis;
 		if (!basis) return {};
 		try {
-			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, basis.evalRunId);
-			const brief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+			const diagnosis = diagnoseEvalRun(this.runsRoot, basis.evalRunId);
+			const brief = compileImprovementBrief(this.runsRoot, diagnosis);
 			const wanted = new Set(basis.failureModes.map((mode) => mode.failureModeId));
 			const targetedModes = brief.modes
 				.filter((mode) => wanted.has(mode.failureModeId))
@@ -1050,7 +959,7 @@ export class AhdeWorkbench {
 	 */
 	private experimentHistory(inventory: WorkbenchInventory): WorkbenchHistoryDetail {
 		try {
-			return this.dependencies.compileExperimentHistory({
+			return compileExperimentHistory({
 				runsRoot: this.runsRoot,
 				projectId: this.projectId,
 				...(inventory.target ? { targetId: inventory.target.manifest.id } : {}),
@@ -1235,9 +1144,8 @@ export class AhdeWorkbench {
 	 * holdout, at the repetitions “check it” uses.
 	 *
 	 * The exam contributes its SIZE and nothing else — no id, no name — and only
-	 * the money and the minutes ever leave this method. The largest eligible
-	 * holdout is priced because the operator may pick any of them: the amount on
-	 * screen is then the most the check can cost, never less.
+	 * the money and the minutes ever leave this method. Only the check is
+	 * priced: the exam is a separate question, asked by ship when it runs.
 	 */
 	/** @internal — called by the decision handlers in ./decisions. */
 	verificationEstimate(
@@ -1255,12 +1163,11 @@ export class AhdeWorkbench {
 		} catch {
 			developmentTasks = 0;
 		}
-		const sealedTasks = inventory.corpora
-			.filter((corpus) => corpus.visibility === "sealed" && corpus.taskCount >= SEALED_GATE_POLICY.minTasks)
-			.reduce((largest, corpus) => Math.max(largest, corpus.taskCount), 0);
+		// The check alone: both development arms, plus the screen an improvement
+		// proposal gets first. The exam is priced by ship, where it runs.
 		const screen = record.request.source?.evalRunId ? developmentTasks : 0;
 		return this.runEstimate(
-			screen + 2 * (developmentTasks + sealedTasks) * DEFAULT_REPETITIONS,
+			screen + 2 * developmentTasks * DEFAULT_REPETITIONS,
 			inventory.target,
 		);
 	}
@@ -1365,6 +1272,10 @@ export class AhdeWorkbench {
 		// A corpus draft is bound to an already-approved Spec, so the basket only
 		// exists once the approval does. Approving is therefore its own start.
 		const corpusDraft = approved ? requireCorpusDraft(inventory, undefined, approved.id, true) : null;
+		// The composite publishes on the way to the run, and it carries no force:
+		// a basket the critic could not make sense of is repaired or excluded with
+		// a reason before anything is measured against it.
+		if (corpusDraft) assertCriticApproves(this.stateRoot, this.projectId, hashValue(corpusDraft), false);
 		if (specDraft) {
 			plan.push("approve-spec");
 			planned.set("approve-spec", (subject) => matchesSpecApproval(subject, specDraft));
@@ -1407,7 +1318,7 @@ export class AhdeWorkbench {
 				}`,
 			);
 		}
-		const evaluatorConfiguration = judge || user ? this.dependencies.describeEvaluatorConfiguration({
+		const evaluatorConfiguration = judge || user ? describeEvaluatorConfiguration({
 			targetDir: this.projectDir, stateRoot: this.stateRoot,
 			...(judge ? { judge: judge.model } : {}), ...(user ? { simulatedUser: user.model } : {}),
 		}) : null;
@@ -1420,7 +1331,7 @@ export class AhdeWorkbench {
 		let publishedForRun: { id: string; hash: string; taskCount: number; lineageHash: string } | null = null;
 		if (corpusDraft) {
 			plan.push("publish-corpus", "run-eval");
-			planned.set("publish-corpus", (subject) => matchesCorpusPublication(subject, corpusDraft));
+			planned.set("publish-corpus", (subject) => matchesCorpusPublication(subject, corpusDraft, reviewed.sourceFreshness));
 			planned.set("run-eval", (subject) => approved !== null && matchesPublishedRun(subject, {
 				repetitions: input.repetitions, target: reviewed.target, approved, corpus: publishedForRun,
 			}));
@@ -1441,6 +1352,8 @@ export class AhdeWorkbench {
 		const title = t("confirm.start-testing.title", { parts: parts.join(", ") });
 		const subject = {
 			operation: "start-testing",
+			...(reviewed.sourceFreshness ? { sourceFreshness: reviewed.sourceFreshness } : {}),
+			...(corpusDraft ? { sampleCases: corpusDraft.tasks.slice(0, MAX_DATASET_SAMPLE_CASES).map(datasetCasePreview), taskCount: corpusDraft.tasks.length } : {}),
 			steps: plan,
 			spec: specDraft
 				? t("confirm.start-testing.approve-draft", { title: specDraft.spec.title })
@@ -1596,13 +1509,36 @@ export class AhdeWorkbench {
 				throw new Error("shipping tags an exact version; say for example “ship 0.2.0”");
 			}
 			const source = requireCandidate(inventory, ["evaluated"], input.candidateId);
-			if (!isAutomatedDevelopmentCandidate(source) || source.origin.kind !== "applied-builder") {
-				throw new Error("this applied change still needs an explicit candidate check before it can ship");
+			if (!isDevelopmentCheckCandidate(source) || source.origin.kind !== "applied-builder") {
+				throw new Error("this applied change still needs a check before it can ship");
 			}
+			// The exam is the expensive half. A check the development gate already
+			// convicted, or one that broke a regression guard, is refused before
+			// a single sealed case runs: promotion would refuse it anyway.
+			const check = source.events.find((event) => event.type === "evaluated");
+			const development = check?.type === "evaluated" ? check.evaluation.development : null;
+			if (promotionGradeVerdictOf(development?.comparison) === "regressed") {
+				throw new WorkbenchTypedRefusalError(
+					"the check regressed on the development basket; a regressed change cannot ship — fix it, or reject it",
+					{ code: "refusal.ship-check-regressed" },
+				);
+			}
+			const guards = development?.regressionGuards;
+			if (guards && guards.broken.length > 0) {
+				throw new WorkbenchTypedRefusalError(
+					`the check broke ${guards.broken.length} of ${guards.guarded} regression guard(s) — cases the base passed every time; ` +
+					"a broken guard cannot ship: fix the change, or check it again with more repetitions",
+					{ code: "refusal.regression-guards-broken", params: { broken: guards.broken.length, guarded: guards.guarded } },
+				);
+			}
+			// The exam repeats as often as the check did, and never under the
+			// sealed policy's floor.
+			const checked = development?.comparison && "design" in development.comparison ? development.comparison.design.repetitions : 0;
 			const verified = await this.decide({
 				kind: "verify-candidate",
 				builderRunId: source.origin.builderRunId,
-				repetitions: SEALED_GATE_POLICY.minRepetitions,
+				repetitions: Math.max(checked, SEALED_GATE_POLICY.minRepetitions),
+				exam: true,
 				reason: input.reason,
 			}, gate, options);
 			if (verified.result.outcome !== "verified") {
@@ -1810,8 +1746,8 @@ export class AhdeWorkbench {
 				? compatibleDevelopmentEvals(inventory, approved.id, corpus.id)
 				: this.compatibleDevelopmentEvalsForSpec(inventory, approved.id),
 		).evalRunId;
-		const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, sourceEvalRunId);
-		const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+		const diagnosis = diagnoseEvalRun(this.runsRoot, sourceEvalRunId);
+		const improvementBrief = compileImprovementBrief(this.runsRoot, diagnosis);
 		const selectedEvidence = deriveEvidenceLinkedProposalSelection(improvementBrief, {
 			...input.source,
 			failureModeIds: input.failureModeIds,
@@ -1855,6 +1791,51 @@ export class AhdeWorkbench {
 		);
 	}
 
+	/**
+	 * The evaluation an improvement workshop binds to and the brief compiled
+	 * from it: one pair for the view's reading of the diagnosis and for the
+	 * binding itself, so what the header calls proposable is exactly what the
+	 * workshop door refuses on.
+	 */
+	private improvementEvidence(
+		inventory: WorkbenchInventory,
+		approvedSpecId: string,
+		evalRunId?: string,
+	): { run: EvalRunRecord; brief: ImprovementBrief } {
+		const run = requireDevelopmentEval(inventory, evalRunId, this.compatibleDevelopmentEvalsForSpec(inventory, approvedSpecId));
+		const diagnosis = diagnoseEvalRun(this.runsRoot, run.evalRunId);
+		return { run, brief: compileImprovementBrief(this.runsRoot, diagnosis) };
+	}
+
+	/**
+	 * Whether the evidence an improvement workshop would bind to can seed a
+	 * proposal, for the summary view. Never a refusal: evidence that cannot be
+	 * read leaves the field absent and `next` as it was.
+	 */
+	private diagnosisReading(inventory: WorkbenchInventory): WorkbenchDiagnosisReading | null {
+		try {
+			const approved = requireApprovedSpec(inventory);
+			const run = requireDevelopmentEval(inventory, undefined, this.compatibleDevelopmentEvalsForSpec(inventory, approved.id));
+			const known = this.diagnosisReadings.get(run.evalRunId);
+			if (known) return known;
+			// A view reads; it never mints the diagnosis. The run decision, /traces
+			// and the workshop door write it, so it is there whenever the operator
+			// can act on it, and a view over an undiagnosed run simply says nothing.
+			const brief = compileImprovementBrief(this.runsRoot, loadDiagnosis(this.runsRoot, run.evalRunId));
+			let judgeAbstained = 0;
+			try {
+				judgeAbstained = judgeAbstentions(loadVerifiedEvalRun(this.runsRoot, run.evalRunId).runs);
+			} catch {
+				judgeAbstained = 0;
+			}
+			const reading = diagnosisReadingOf(brief, judgeAbstained);
+			this.diagnosisReadings.set(run.evalRunId, reading);
+			return reading;
+		} catch {
+			return null;
+		}
+	}
+
 	/** Re-derive the exact authority an open/recovered workshop must still match. */
 	private deriveWorkshopBinding(
 		inventory: WorkbenchInventory,
@@ -1862,6 +1843,8 @@ export class AhdeWorkbench {
 			approvedSpecId?: string;
 			expectedBasis?: BuilderWorkshopBasis;
 			source?: BuilderWorkshopSource | null;
+			/** A fresh workshop over a brief with nothing proposable is refused at the door. */
+			requireProposable?: boolean;
 		},
 	): BuilderWorkshopBinding {
 		const basis = assertWorkshopStage(deriveWorkbenchView(inventory).stage);
@@ -1877,13 +1860,16 @@ export class AhdeWorkbench {
 			}
 			return { basis, approvedSpecId: approved.id, source: null };
 		}
-		const run = requireDevelopmentEval(
-			inventory,
-			input.source?.evalRunId,
-			this.compatibleDevelopmentEvalsForSpec(inventory, approved.id),
-		);
-		const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, run.evalRunId);
-		const brief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+		const { brief } = this.improvementEvidence(inventory, approved.id, input.source?.evalRunId);
+		// The refusal `workshop-close` gives, given at the door instead: a brief
+		// with no proposable mode cannot become a proposal, so everything written
+		// in a workshop bound to it is thrown away (live session 10).
+		if (input.requireProposable && !brief.proposalEligible) {
+			throw new ProposalIneligibleError(
+				"improvement evidence is not eligible for a harness proposal",
+				{ code: "refusal.brief-not-proposable" },
+			);
+		}
 		const source: BuilderWorkshopSource = {
 			algorithmId: brief.algorithmId,
 			evalRunId: brief.evalRunId,
@@ -2120,7 +2106,7 @@ export class AhdeWorkbench {
 			}
 			binding = this.deriveWorkshopBinding(inventory, {
 				approvedSpecId: seed?.binding.approvedSpecId ?? input.approvedSpecId,
-				...(seed ? { expectedBasis: seed.binding.basis, source: seed.binding.source } : {}),
+				...(seed ? { expectedBasis: seed.binding.basis, source: seed.binding.source } : { requireProposable: true }),
 			});
 			if (seed && !exactSame(binding, seed.binding)) {
 				throw new Error("the seeded proposal's Spec or evidence binding is stale");
@@ -2260,7 +2246,7 @@ export class AhdeWorkbench {
 		}
 		// A promise may only name what this close is actually aiming at, and a
 		// construction close is aiming at nothing measured yet.
-		assertPredictionScope(input.prediction, {
+		assertPredictionScope(input.prediction ? { modes: input.prediction.modes ?? [] } : input.prediction, {
 			failureModeIds: input.failureModeIds ?? [],
 			basis: construction ? "construction" : "improvement",
 		});
@@ -2681,7 +2667,7 @@ export class AhdeWorkbench {
 				const parent = open[open.length - 1];
 				const summary = `Contract cases for the ${name} tool`;
 				const draft = parent
-					? this.dependencies.reviseCorpusDraft({
+					? reviseBuilderCorpusDraft({
 						stateRoot: this.stateRoot,
 						approvedSpec: exact.reference,
 						parentDraftId: parent.id,
@@ -2689,7 +2675,7 @@ export class AhdeWorkbench {
 						verifiedTaskProvenance: [],
 						revisionSummary: summary,
 					}, { now: this.dependencies.now }).draft
-					: this.dependencies.createCorpusDraft({
+					: createBuilderCorpusDraft({
 						stateRoot: this.stateRoot,
 						approvedSpec: exact.reference,
 						name: `${name} contract`,
@@ -2852,32 +2838,17 @@ export class AhdeWorkbench {
 			...(workshop ? { workshop } : {}),
 			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
+		// The stage says a diagnosis exists; this says whether it names a defect a
+		// harness change can answer, so `next` can point at the instrument instead.
+		if (view.stage === "improvement-authoring") {
+			const diagnosis = this.diagnosisReading(inventory);
+			if (diagnosis) view.diagnosis = diagnosis;
+		}
 		view.guidance = workbenchNext(view, resolveRunCurrent(inventory, view.stage));
 		const finding = currentFindingFromInventory(inventory, view);
 		if (finding) view.finding = finding;
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
-		if (aspect === "models") {
-			const scope = { targetDir: this.projectDir, stateRoot: this.stateRoot, projectId: this.projectId };
-			const experiments = query.experimentId
-				? [loadModelExperiment(this.runsRoot, query.experimentId, scope)]
-				: listModelExperiments(this.runsRoot, scope).slice(0, 10);
-			const selected = experiments[0] ?? null;
-			if (selected && (selected.plan.corpus.projectId !== this.projectId || selected.plan.corpus.stateRoot !== this.stateRoot)) {
-				throw new Error("The model experiment belongs to another project");
-			}
-			let selectedRun;
-			if (query.runId && selected) {
-				const arm = selected.arms.find((item) => item.armId === query.armId);
-				if (!arm?.evalRunId) throw new Error("This model experiment arm has no recorded evaluation");
-				const evaluation = loadModelExperimentEval(this.runsRoot, selected.id, arm.evalRunId, scope);
-				selectedRun = inspectModelExperimentRun({
-					runsRoot: join(modelExperimentDirectory(this.runsRoot, selected.id), "evals"),
-					evaluation, targetId: selected.plan.targetId, runId: query.runId,
-				});
-			}
-			return { ...view, detail: { aspect, content: { experiments, selected, ...(selectedRun ? { selectedRun } : {}) } } };
-		}
 		if (aspect === "target") {
 			// The Builder reads this immediately before it authors, so it is where
 			// the memory of what was already tried belongs: what each attempt
@@ -2901,7 +2872,7 @@ export class AhdeWorkbench {
 		if (aspect === "dataset") {
 			const sourcePath = query.resourcePath!;
 			const holdout = this.datasetHoldout(sourcePath);
-			const preview = this.dependencies.inspectDataset({
+			const preview = inspectDatasetFile({
 				projectDir: this.projectDir,
 				sourcePath,
 				holdout,
@@ -2917,9 +2888,11 @@ export class AhdeWorkbench {
 			const selectedRun = query.runId ? inspectSelectedDevelopmentRun({
 				runsRoot: this.runsRoot, evaluation: verified, targetId: inventory.target!.manifest.id, runId: query.runId,
 			}) : undefined;
-			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, run.evalRunId);
-			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+			const diagnosis = diagnoseEvalRun(this.runsRoot, run.evalRunId);
+			const improvementBrief = compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(run));
+			const brief = conversationalImprovementBrief(improvementBrief);
+			const basket = basketReadingOf(this, inventory, run, verified.runs, brief);
 			return {
 				...view,
 				detail: {
@@ -2928,7 +2901,8 @@ export class AhdeWorkbench {
 						evaluation: evaluationProjection(run, inventory.corpora, verified.runs),
 						...(selectedRun ? { selectedRun } : {}),
 						diagnosis: diagnosisSummary(diagnosis),
-						improvementBrief: conversationalImprovementBrief(improvementBrief),
+						improvementBrief: brief,
+						...(basket ? { basket } : {}),
 						evidence: link ? { available: true, ...link } : { available: false },
 						// The worlded cases behind the numbers above. A worlded case
 						// read as a table row loses who is in it, what is already true
@@ -2959,7 +2933,7 @@ export class AhdeWorkbench {
 				const continuation = inventory.continuedCandidates.get(candidate.candidateId) ?? null;
 				content = {
 					kind: "candidate",
-					...this.candidateView(candidate, inventory.developmentEvals),
+					...this.candidateView(candidate, inventory.developmentEvals, query.casesOffset),
 					...proposal,
 					adoption: adoption
 						? { receiptId: adoption.receiptId, adoptedAt: adoption.adoptedAt, branch: adoption.intent.subject.branch.name }
@@ -2974,7 +2948,13 @@ export class AhdeWorkbench {
 			case "corpus-review": {
 				const approved = requireApprovedSpec(inventory);
 				const draft = requireCorpusDraft(inventory, undefined, approved.id, true);
-				content = { kind: "corpus-draft", id: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, name: draft.name, coverageNotes: draft.coverageNotes, importSource: draft.importSource ?? null, tasks: draft.tasks, taskProvenance: draft.taskProvenance ?? [] };
+				// The matrix and the critic's last word travel with the draft: the
+				// review is where an empty cell and a doubted case are still cheap.
+				// `exclusions` rides along a field wider than the review type: what
+				// left the basket is read next to what is still in it.
+				const draftHash = hashValue(draft);
+				const corpusDetail = { kind: "corpus-draft" as const, id: draft.id, draftHash, approvedSpec: draft.approvedSpec, name: draft.name, coverageNotes: draft.coverageNotes, importSource: draft.importSource ?? null, tasks: draft.tasks, taskProvenance: draft.taskProvenance ?? [], exclusions: draft.exclusions ?? [], sourceFreshness: corpusSourceFreshness(draft, inventory.target), coverage: coverageDensity(draft.tasks, approved.spec.jobs), critic: loadCorpusCritic(this.stateRoot, this.projectId, draftHash) };
+				content = corpusDetail;
 				break;
 			}
 			case "proposal-review":
@@ -2989,7 +2969,7 @@ export class AhdeWorkbench {
 				const proposal = this.candidateProposalProjection(candidate);
 				content = {
 					kind: "candidate",
-					...this.candidateView(candidate, inventory.developmentEvals),
+					...this.candidateView(candidate, inventory.developmentEvals, query.casesOffset),
 					...proposal,
 					adoption: null,
 					continuation: null,
@@ -3013,19 +2993,19 @@ export class AhdeWorkbench {
 					content = { kind: "interrupted-candidate", ...candidateSummary(candidate) };
 					break;
 				}
-				const automated = inventory.candidates.filter((candidate) =>
-					candidate.projectId === this.projectId && isAutomatedDevelopmentCandidate(candidate)
+				const checks = inventory.candidates.filter((candidate) =>
+					candidate.projectId === this.projectId && isDevelopmentCheckCandidate(candidate)
 				);
-				if (automated.length > 0) {
+				if (checks.length > 0) {
 					const candidate = resolveOne({
-						items: automated,
+						items: checks,
 						focusId: inventory.validFocus.candidate?.id,
 						id: (item) => item.candidateId,
-						label: "automated hypothesis",
+						label: "checked change",
 					});
 					content = {
 						kind: "candidate",
-						...this.candidateView(candidate, inventory.developmentEvals),
+						...this.candidateView(candidate, inventory.developmentEvals, query.casesOffset),
 						...this.candidateProposalProjection(candidate),
 						adoption: null,
 						continuation: null,
@@ -3067,7 +3047,7 @@ export class AhdeWorkbench {
 			return { kind: input.kind, message: `Selected ${input.entity} ${input.id}.`, artifact: { kind: input.entity, id: input.id }, view: await this.viewOf(settled) };
 		}
 		if (input.kind === "spec-draft") {
-			const draft = this.dependencies.saveSpecDraft({
+			const draft = saveBuilderSpecDraft({
 				stateRoot: this.stateRoot,
 				projectId: this.projectId,
 				spec: input.spec,
@@ -3084,11 +3064,20 @@ export class AhdeWorkbench {
 			if (inventory.target) {
 				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			}
-			const result = this.dependencies.createCorpusDraft({
+			const result = createBuilderCorpusDraft({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
 				name: input.name,
 				tasks: input.tasks,
+				// A citation is only worth something if the host reads the bytes it
+				// names. Without a resolved Target there is nothing to read it from,
+				// and the draft carries the claim unverified rather than refusing.
+				...(inventory.target
+					? {
+						sourceBinding: captureCorpusSourceBinding(inventory.target),
+						verifySource: verifyCaseSource(inventory.target, this.projectDir),
+					}
+					: {}),
 				coverageNotes: input.coverageNotes,
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
@@ -3111,7 +3100,7 @@ export class AhdeWorkbench {
 			const inventory = this.inventory();
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
-			const result = this.dependencies.importCorpusDraft({
+			const result = importBuilderCorpusDraft({
 				stateRoot: this.stateRoot,
 				projectDir: this.projectDir,
 				runsRoot: this.runsRoot,
@@ -3154,7 +3143,7 @@ export class AhdeWorkbench {
 			const holdout = this.datasetHoldout(input.sourcePath);
 			// The compile is the validation: it resolves every column and every
 			// {{placeholder}} before a single row is mapped.
-			const compiled = this.dependencies.compileDatasetCases({
+			const compiled = compileDatasetCases({
 				projectDir: this.projectDir,
 				sourcePath: input.sourcePath,
 				recipe: input.recipe,
@@ -3173,7 +3162,7 @@ export class AhdeWorkbench {
 				);
 			}
 			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
-			const saved = this.dependencies.saveDatasetRecipe({
+			const saved = saveDatasetRecipeSubmission({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
 				sourcePath: input.sourcePath,
@@ -3226,7 +3215,7 @@ export class AhdeWorkbench {
 			const parent = input.parentDraftId !== undefined || matchingDrafts.length > 0
 				? requireCorpusDraft(inventory, input.parentDraftId, approved.id)
 				: null;
-			const result = this.dependencies.addProductionFailureCase({
+			const result = addProductionFailureCase({
 				projectDir: this.projectDir,
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -3267,16 +3256,6 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
 			const parent = requireCorpusDraft(inventory, input.parentDraftId, approved.id);
-			if (inventory.target) {
-				// Validate every grader carried by the revision before an immutable draft is written.
-				const carried = input.operations.flatMap((operation) => {
-					if ("task" in operation && operation.task) return [{ graders: operation.task.graders }];
-					if ("graders" in operation && Array.isArray(operation.graders)) return [{ graders: operation.graders }];
-					if ("grader" in operation && operation.grader) return [{ graders: [operation.grader] }];
-					return [];
-				});
-				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
-			}
 			let operations: readonly unknown[] = input.operations;
 			let verifiedTaskProvenance: readonly unknown[] = [];
 			if (input.operations.some((operation) => operation.type === "add-case-from-run")) {
@@ -3297,14 +3276,22 @@ export class AhdeWorkbench {
 				operations = resolved.operations;
 				verifiedTaskProvenance = resolved.verifiedTaskProvenance;
 			}
-			const result = this.dependencies.reviseCorpusDraft({
+			const result = reviseBuilderCorpusDraft({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
 				parentDraftId: parent.id,
 				operations,
 				verifiedTaskProvenance,
+				...(inventory.target ? { verifySource: verifyCaseSource(inventory.target, this.projectDir) } : {}),
 				revisionSummary: input.revisionSummary,
-			}, { now: this.dependencies.now });
+			}, {
+				now: this.dependencies.now,
+				validateTasks: (tasks) => {
+					if (inventory.target) {
+						assertGradersRunnable(tasks, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
+					}
+				},
+			});
 			const settled = this.select("corpus-draft", result.draft.id);
 			// A revision written in front of a candidate has exactly one next step,
 			// and it is not the one the stage machine's headline suggests.
@@ -3369,7 +3356,7 @@ export class AhdeWorkbench {
 			failureModeIds: input.failureModeIds ?? [],
 			basis: construction ? "construction" : "improvement",
 		});
-		const proposal = this.dependencies.compileHarnessProposal({
+		const proposal = compileHarnessAuthoringProposal({
 			repositoryDir: this.projectDir,
 			expectedBaseTargetSha: authoringContext.target.gitSha,
 			intents: input.intents,
@@ -3490,10 +3477,9 @@ export class AhdeWorkbench {
 		if (input.kind === "run-eval") return decideRunEval(this, input, ctx);
 
 		if (input.kind === "calibrate") return decideCalibrate(this, input, ctx);
-		if (input.kind === "model-experiment") return decideModelExperiment(this, input, ctx);
-		if (input.kind === "accept-model") return decideAcceptModel(this, input, ctx);
 
 		if (input.kind === "regrade") return decideRegrade(this, input, ctx);
+		if (input.kind === "critique-corpus") return decideCritiqueCorpus(this, input, ctx);
 
 		if (input.kind === "apply-proposal") return decideApplyProposal(this, input, ctx);
 
@@ -3521,4 +3507,3 @@ export class AhdeWorkbench {
 export function createAhdeWorkbench(options: AhdeWorkbenchOptions): AhdeWorkbench {
 	return new AhdeWorkbench(options);
 }
-

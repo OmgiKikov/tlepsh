@@ -138,14 +138,16 @@ function versionDatasetArtifact(
 ): VersionCardDatasetArtifactInput | null {
 	const evalRunId = passport.provenance.developmentEvalRuns?.candidate;
 	if (!evalRunId) return null;
+	const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
+	// Unknown visibility is a refusal, not an optional missing dataset attachment.
+	const sealedDatasetHashes = sealedDatasetHashesFor(scope);
 	try {
-		const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
 		const exported = exportDataset({
 			runsRoot: workbench.runsRoot,
 			outRoot: workbench.projectDir,
 			evalRunId,
 			includeFailed: true,
-			sealedDatasetHashes: sealedDatasetHashesFor(scope),
+			sealedDatasetHashes,
 			tasks: corpusTaskLookup(scope),
 		});
 		if (exported.counts.exported === 0) return null;
@@ -185,6 +187,7 @@ export async function compileBuilderPassport(
 	let passportArtifact: VersionCardArtifactInput | null = null;
 	let datasetArtifact: VersionCardDatasetArtifactInput | null = null;
 	if (options.save === true) {
+		datasetArtifact = versionDatasetArtifact(workbench, passport);
 		written = resolve(workbench.projectDir, name);
 		try {
 			writeTextArtifact(written, markdown);
@@ -197,7 +200,6 @@ export async function compileBuilderPassport(
 			// The page remains useful in the Builder even when the checkout is read-only.
 			written = null;
 		}
-		datasetArtifact = versionDatasetArtifact(workbench, passport);
 	}
 	const candidate = exactCandidate(workbench, passport);
 	const impact = verifiedImpact(workbench, candidate);

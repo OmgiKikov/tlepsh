@@ -6,6 +6,9 @@ import type {
 	WorkbenchProposalReview,
 } from "../../workbench/types.js";
 import { plural, t } from "../../i18n.js";
+import { CorpusTaskSchema } from "../../corpus.js";
+import { redactTraceText } from "../../trace.js";
+import { datasetCasePreview, MAX_DATASET_SAMPLE_CASES } from "../../workbench/workbench.js";
 import { sealedOutcomeLabel } from "../../domain/comparison-gate.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, isSubCent, kappa as formatKappa, money, numbered, oneLine, percent, shortHash, shortSha, wrap } from "./format.js";
@@ -17,8 +20,7 @@ import {
 	predictionPromiseLine,
 } from "./prediction.js";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../proposal-contract.js";
-import { renderCandidate, renderDatasetCases } from "./view.js";
-import { renderModelAcceptanceConfirmation, renderModelExperimentConfirmation } from "./model-experiment.js";
+import { renderCandidate, renderCorpusSources, renderDatasetCases, worldCardLines, type TitledDatasetCase } from "./view.js";
 
 type Bag = Record<string, unknown>;
 
@@ -49,6 +51,20 @@ function text(value: unknown, max = 160): string {
 	if (typeof value === "number" || typeof value === "boolean") return String(value);
 	if (value === null || value === undefined) return "—";
 	return oneLine(JSON.stringify(value), max);
+}
+
+/** Full cards and legacy input-only tasks share numbering and an honest preview bound. */
+function sampleCaseLines(cases: readonly (TitledDatasetCase | string)[], paint: Paint, total: unknown = cases.length): string[] {
+	if (cases.length === 0) return [];
+	const shown = cases.slice(0, MAX_DATASET_SAMPLE_CASES);
+	const lines = [paint.dim(t("dialog.sample-cases"))];
+	shown.forEach((sample, index) => {
+		const [first, ...rest] = typeof sample === "string" ? [sample] : worldCardLines(sample, paint);
+		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${first ?? ""}`, ...rest);
+	});
+	const count = typeof total === "number" && Number.isSafeInteger(total) ? Math.max(total, cases.length) : cases.length;
+	if (count > shown.length) lines.push(`  ${paint.dim(t("view.more-cases", { count: count - shown.length }))}`);
+	return lines;
 }
 
 /**
@@ -182,8 +198,6 @@ function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Pai
 function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string[] {
 	const subject = bag(confirmation.subject);
 	switch (confirmation.kind) {
-		case "model-experiment": return renderModelExperimentConfirmation(subject.plan, paint);
-		case "accept-model": return renderModelAcceptanceConfirmation(subject, paint);
 		case "scaffold-target": {
 			const files = Array.isArray(subject.templateFiles) ? subject.templateFiles : [];
 			return [
@@ -261,6 +275,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			return [
 				`${paint.dim(t("label.spec"))} ${text(subject.spec, 96)}`,
 				`${paint.dim(t("label.basket"))} ${text(subject.basket, 96)}`,
+				...renderCorpusSources(subject.sourceFreshness, paint),
+				...sampleCaseLines(Array.isArray(subject.sampleCases) ? subject.sampleCases as WorkbenchDatasetCase[] : [], paint, subject.taskCount),
 				// The evaluator models the host pre-filled, named where the operator
 				// approves them. Absent lines mean this basket needs neither, or the
 				// Target already carries one — invariant 40 either way: the model and
@@ -358,9 +374,16 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "publish-corpus": {
 			const publication = bag(subject.publication);
 			const tasks = Array.isArray(subject.tasks) ? subject.tasks : [];
+			const samples = tasks.slice(0, MAX_DATASET_SAMPLE_CASES).map((task): TitledDatasetCase | string => {
+				const parsed = CorpusTaskSchema.safeParse(task);
+				if (parsed.success) return { ...datasetCasePreview(parsed.data), taskId: parsed.data.id };
+				const input = typeof task === "string" ? task : bag(task).input;
+				return oneLine(redactTraceText(typeof input === "string" ? input : t("view.case-unnamed")), 96);
+			});
 			return [
 				`${paint.dim(t("label.basket"))} ${paint.bold(text(publication.name, 80))} ${paint.dim(`· ${plural(Number(publication.taskCount ?? tasks.length), "case")} · ${shortHash(text(publication.contentHash))}`)}`,
-				...numbered(tasks.map((task) => text(bag(task).input ?? task, 96)), paint, { limit: 10 }),
+				...renderCorpusSources(subject.sourceFreshness, paint),
+				...sampleCaseLines(samples, paint, tasks.length),
 				paint.muted(t("dialog.publish-note")),
 			];
 		}
@@ -467,7 +490,11 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const stats = diffStats(diff);
 			// The promise the operator is approving, on the screen where they say yes.
 			const prediction = predictionOf(subject.prediction);
+			// The first build lands on the operator's branch and is not checked:
+			// what it will do is said before the diff, not after it.
+			const firstBuild = subject.operation === "first-build";
 			return [
+				...(firstBuild ? [paint.accent(t("confirm.first-build.lead"))] : []),
 				`${paint.dim(t("label.branch"))} ${paint.bold(text(subject.branch, 80))} ${paint.dim(`· ${t("label.base")}`)} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
 				`${paint.dim(t("label.changes"))} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
@@ -476,7 +503,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				...renderToolPermissions(toolPermissionsFromDiff(diff), paint),
 				predictionPromiseLine(prediction, paint) ?? predictionAbsentLine(paint),
 				...(predictionNoteLine(prediction, paint) ? [predictionNoteLine(prediction, paint)!] : []),
-				verificationLine(confirmation.estimate, paint),
+				...(firstBuild ? [] : [verificationLine(confirmation.estimate, paint)]),
 				...(strings(subject.risks).length > 0 ? [paint.warning(t("label.risks")), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
 				// The diff itself, here, before the yes — /review is a second look at
 				// it, never the only one.
@@ -485,7 +512,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					maxLines: APPLY_PROPOSAL_DIFF_LINES,
 					remainder: t("confirm.apply-remainder"),
 				}),
-				paint.muted(t("confirm.apply-checkout")),
+				paint.muted(t(firstBuild ? "confirm.first-build.note" : "confirm.apply-checkout")),
 			];
 		}
 		case "discard-proposal":

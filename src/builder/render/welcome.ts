@@ -24,12 +24,15 @@ export function welcomeIntents(view: WorkbenchView): string[] {
 	if (view.target.status === "bootstrap-required" && can("wrap-target")) intents.push(t("welcome.connect-python"));
 	if (view.target.status === "missing" && can("scaffold-target")) intents.push(t("welcome.create"));
 	if (view.target.status !== "missing" && can("configure-target")) intents.push(t("welcome.configure"));
+	// The Spec is approved and the agent is still the template: build it first.
+	if (view.target.built === false && view.counts.approvedSpecs > 0 && next.workshop?.basis === "construction") {
+		intents.push(t("welcome.build"));
+	}
 	if (can("run-current") && (can("run-eval") || (can("start-testing") && view.counts.corpusDrafts > 0))) {
 		intents.push(t("welcome.run"));
 	}
 	if (can("run-current") && can("verify-candidate")) intents.push(t("welcome.verify"));
 	if (can("improve")) intents.push(t("welcome.improve"));
-	if (can("model-experiment")) intents.push(t("welcome.models"));
 	if (view.counts.approvedSpecs === 0 && next.submit.some((entry) => entry.kind === "spec-draft")) {
 		intents.push(t("welcome.describe"));
 	}

@@ -175,8 +175,6 @@ describe("Workbench gate policy", () => {
 			"scaffold-target": "consequential",
 			"wrap-target": "consequential",
 			"configure-target": "consequential",
-			"model-experiment": "consequential",
-			"accept-model": "consequential",
 			// The judge and the user model commit to manifest.yaml too, and they
 			// decide what every later measurement is measured with.
 			"configure-evaluators": "consequential",
@@ -206,6 +204,8 @@ describe("Workbench gate policy", () => {
 			// Cheapest measurement there is: it re-scores answers already bought
 			// and calls no Target at all. The guard still prices the judge.
 			regrade: "routine",
+			// The critic reads the cases with the judge; judge money, no Target call.
+			"critique-corpus": "routine",
 			"verify-candidate": "routine",
 				improve: "consequential",
 		});
@@ -559,9 +559,9 @@ describe("one money question per cycle", () => {
 		const apply = human.confirm.mock.calls.at(-1)?.[0];
 		expect(apply).toMatchObject({ kind: "apply-proposal", policy: "consequential" });
 		// A construction diff attests no basket, but the check still runs the
-		// published development corpus of its Spec: 1 development case plus the
-		// 15-case exam, both arms, at the repetitions “check it” uses.
-		expect(apply?.estimate).toMatchObject({ executions: 2 * (1 + 15) * 3, sampledRuns: 1 });
+		// published development corpus of its Spec: 1 development case, both
+		// arms, at the repetitions “check it” uses. The exam is priced by ship.
+		expect(apply?.estimate).toMatchObject({ executions: 2 * 1 * 3, sampledRuns: 1 });
 		expect(apply?.estimate?.costUsd).toBeGreaterThan(DEFAULT_ROUTINE_COST_USD);
 
 		// The receipt of this exact candidate carries exactly what was on screen.
@@ -569,11 +569,11 @@ describe("one money question per cycle", () => {
 		expect(receipt.schemaVersion).toBe(4);
 		expect(receipt.verificationAuthorization).toEqual(apply?.estimate);
 
-		// The check itself is cheaper than what was authorized, so it just runs:
-		// the sealed holdout is still selected, but nothing is asked.
+		// The check itself is within what was authorized, so it just runs — and
+		// a plain check never opens the exam, so no holdout is selected.
 		const asked = questions(human);
 		await verify(workbench, human, measured);
-		expect(human.selectSealed).toHaveBeenCalledTimes(1);
+		expect(human.selectSealed).not.toHaveBeenCalled();
 		expect(questions(human)).toBe(asked);
 	}, 60_000);
 
@@ -642,8 +642,8 @@ describe("the development arm of a verification", () => {
 		const subject = asked.subject as Record<string, unknown>;
 		const corpus = subject.developmentCorpus as { id: string; taskCount: number };
 		expect(corpus.taskCount).toBe(6);
-		expect(asked.question).toContain(`${2 * (6 + 15) * SEALED_VERIFICATION_REPETITIONS} Target executions`);
-		expect(asked.estimate?.executions).toBe(2 * (6 + 15) * SEALED_VERIFICATION_REPETITIONS);
+		expect(asked.question).toContain(`${2 * 6 * SEALED_VERIFICATION_REPETITIONS} Target executions`);
+		expect(asked.estimate?.executions).toBe(2 * 6 * SEALED_VERIFICATION_REPETITIONS);
 
 		// And the experiment is handed that exact corpus, not a dataset override.
 		expect(measured).toHaveBeenCalledTimes(1);
@@ -670,12 +670,14 @@ describe("the development arm of a verification", () => {
 			await expect(workbench.decide({
 				kind: "verify-candidate",
 				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				exam: true,
 				reason: "Check the applied candidate",
 			}, human)).rejects.toThrow(expected);
 			if (phase === "sealed") {
 				await expect(workbench.decide({
 					kind: "verify-candidate",
 					repetitions: SEALED_VERIFICATION_REPETITIONS,
+					exam: true,
 					reason: "Check the applied candidate",
 				}, human)).rejects.not.toThrow(/candidate\.json|task-1/);
 			}

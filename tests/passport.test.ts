@@ -9,8 +9,6 @@ import {
 	type VersionPassport,
 } from "../src/application/version-passport.js";
 import { createCorpus } from "../src/corpus.js";
-import { parseCliInvocation } from "../src/cli-invocation.js";
-import { cliHelp } from "../src/cli-help.js";
 import {
 	CandidateRecordSchema,
 	createCandidate,
@@ -455,14 +453,6 @@ describe("version passport", () => {
 		expect(byTag.candidateId).toBe("candidate-fixture");
 		expect(byId.versionTag).toBe("v0.1.0");
 		expect(byId).toEqual(passport());
-		// `ahde passport latest` and `ahde passport` are the same invocation.
-		expect(parseCliInvocation(["passport", "--target", "."])).toMatchObject({ positionals: [] });
-		expect(parseCliInvocation(["passport", "--target", ".", "latest"])).toMatchObject({
-			command: "passport",
-			positionals: ["latest"],
-		});
-		expect(() => parseCliInvocation(["passport", "--target", ".", "--candidate", "c", "--tag", "v0.1.0"]))
-			.toThrow(/cannot combine --candidate with --tag/);
 	});
 
 	it("carries the whole projection, hashes intact, behind --json", () => {
@@ -562,8 +552,8 @@ describe("version passport", () => {
 			expect(thrown).toBeInstanceOf(VersionPassportError);
 			expect((thrown as VersionPassportError).message)
 				.toMatch(/has no promoted candidate to issue a passport for/);
-			expect((thrown as VersionPassportError).next).toMatch(/ahde promote --target/);
-			expect((thrown as VersionPassportError).next).toMatch(/--candidate <id>/);
+			expect((thrown as VersionPassportError).next).toMatch(/\/ship/);
+			expect((thrown as VersionPassportError).next).toMatch(/candidate id/);
 		} finally {
 			cleanup(empty);
 		}
@@ -638,14 +628,5 @@ describe("version passport", () => {
 			expect(fixture.runsRoot).toBe(previous);
 			cleanup(construction);
 		}
-	});
-
-	it("is on the command crib and has its own help page", () => {
-		expect(cliHelp([])).toContain("log  watch  passport");
-		expect(cliHelp([])).toContain("ahde passport --target <dir> [--tag v0.X.0]");
-		const help = cliHelp(["passport", "--help"]);
-		expect(help).toContain("ahde passport --target <dir> [--project <id>] [latest] [--json] [--out <path>]");
-		expect(help).toContain("The sealed holdout contributes its verdict and its design size and");
-		expect(help).toContain("Exit 2 when the subject or an artifact the page rests on is missing.");
 	});
 });

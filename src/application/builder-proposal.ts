@@ -334,7 +334,7 @@ export type PersistedBuilderRun = z.infer<typeof PersistedBuilderRunSchema>;
  * Project-owned authority admitting one shared Builder run into a Workbench.
  * The shared run's mutable self-description is never used to decide ownership.
  */
-export const BuilderProposalAdmissionSchema = z.strictObject({
+const BuilderProposalAdmissionSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	projectId: ProjectIdSchema,
 	runId: RunIdSchema,
@@ -360,16 +360,19 @@ const HumanActorSchema = z.strictObject({ kind: z.literal("human"), id: NonBlank
  * readable exactly as written: they predate automated applies, and every one
  * of them was an interactive apply.
  */
-export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 4;
+const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 4;
 
 /**
- * How the apply happened, when it was not a human reading the diff.
+ * How the apply happened, when it was not an ordinary human apply.
  * `improvement-loop` and `proposal-search` mean the operator authorized an
  * automated trial on throwaway branches without reviewing each proposal on its
- * own. Absent means an interactive apply — a human saw this exact diff and said
- * yes to it.
+ * own. `first-build` means a human read this exact diff and accepted it as the
+ * agent's first working version: the Target was still the packaged template,
+ * the operator's branch was fast-forwarded onto the build, and no candidate
+ * follows it. Absent means an interactive apply — a human saw this exact diff
+ * and said yes to it, and a candidate verification is next.
  */
-export const BuilderApplyViaSchema = z.enum(["improvement-loop", "proposal-search"]);
+const BuilderApplyViaSchema = z.enum(["improvement-loop", "proposal-search", "first-build"]);
 export type BuilderApplyVia = z.infer<typeof BuilderApplyViaSchema>;
 
 /**
@@ -378,7 +381,7 @@ export type BuilderApplyVia = z.infer<typeof BuilderApplyViaSchema>;
  * moment of the apply dialog; nothing a model says can reach it. Verification
  * reads it back instead of asking the money question a second time.
  */
-export const BuilderVerificationAuthorizationSchema = z.strictObject({
+const BuilderVerificationAuthorizationSchema = z.strictObject({
 	/** Target executions the estimate priced: screen + both arms of both baskets. */
 	executions: z.number().int().min(0),
 	/** Finished runs the mean came from; 0 means the amount was unknown. */
@@ -483,7 +486,7 @@ export interface BuilderProposalRunResult {
  * Admit an actionable canonical proposal into exactly one project's Workbench.
  * Replaying the exact receipt is crash-safe; conflicting authority is refused.
  */
-export function admitBuilderProposalRun(
+function admitBuilderProposalRun(
 	stateRoot: string,
 	projectIdInput: string,
 	result: BuilderProposalRunResult,
@@ -1299,7 +1302,7 @@ export interface ApplyBuilderProposalOptions {
 	actor: { kind: "human"; id: string };
 	/**
 	 * Set by a caller that applies without showing this diff to a human — today
-	 * only `ahde improve`. Absent means the actor read this exact diff.
+	 * only the improvement loop. Absent means the actor read this exact diff.
 	 */
 	via?: BuilderApplyVia;
 	/**

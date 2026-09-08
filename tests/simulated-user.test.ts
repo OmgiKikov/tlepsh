@@ -3,11 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { loadTarget } from "../src/manifest.js";
+import { loadTarget, ModelBlock, TaskSchema, suiteHashOf, taskDialogueIssue } from "../src/manifest.js";
 import { effectiveProvenance, runCandidateExperiment } from "../src/application/candidate-experiment.js";
+import { targetWithSimulatedUser } from "../src/application/corpus-target.js";
 import { compileDatasetCases } from "../src/application/dataset-ingest.js";
 import { loadExactEvalSnapshot } from "../src/application/exact-eval-snapshot.js";
-import { renderRunTurns, runSuite } from "../src/eval.js";
+import { compareEvalRuns } from "../src/compare.js";
+import { t } from "../src/i18n.js";
+import { loadRun, renderRunTurns, runSuite, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
+import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { regradeEvalRun } from "../src/regrade.js";
 import {
 	startMockModel,
@@ -15,8 +19,10 @@ import {
 	type MockRequestContext,
 	type MockStep,
 } from "../src/mock-model.js";
-import { axisDifferences, canonicalJson, hashValue } from "../src/provenance.js";
-import { openTrace } from "../src/trace.js";
+import { RunRecordSchema, axisDifferences, canonicalJson, hashValue, modelFingerprint } from "../src/provenance.js";
+import { openTrace, renderDialogueTranscript, type TranscriptTurn } from "../src/trace.js";
+import { describeSimulatedUserBehavior, nextSimulatedUserTurn } from "../src/simulated-user.js";
+import type { SimulatedUserBehavior, TargetManifest } from "../src/manifest.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 /**
@@ -30,6 +36,7 @@ import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const GRADER_MARKER = "ТОКЕН-ГРЕЙДЕРА-777";
 const REFERENCE_MARKER = "ЭТАЛОН-999";
+const PRIVATE_WORLD_MARKER = "BACKEND-ONLY-REASON-8362";
 
 /** `Это реплика N из M.` — which turn the user model is being asked for. */
 function requestedTurn(prompt: string): number {
@@ -191,7 +198,13 @@ describe("a conversation the host plays both sides of", () => {
 		const dir = makeTargetFixture(baseFixtureFiles({
 			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url, userUrl: userMock.url }),
 			"evals/development.jsonl": datasetOf([
-				BUDGET_CASE, SENTINEL_CASE, STOP_WHEN_CASE, TOOL_CASE, DIALOGUE_CASE,
+				BUDGET_CASE,
+				{
+					...SENTINEL_CASE,
+					simulatedUser: { ...SENTINEL_CASE.simulatedUser, persona: "торопливый клиент; знает номер своего договора 4412" },
+					world: { state: { backendReason: PRIVATE_WORLD_MARKER } },
+				},
+				STOP_WHEN_CASE, TOOL_CASE, DIALOGUE_CASE,
 			]),
 		}));
 		const runsRoot = join(dir, "..", `simulated-user-runs-${Date.now()}`);
@@ -294,9 +307,16 @@ describe("a conversation the host plays both sides of", () => {
 			}
 			// A persona reaches the user model exactly when the case declares one.
 			expect(sidecar("sim_sentinel", 2)).toContain("торопливый клиент");
+			// Known customer facts are explicit scenario input; private backend
+			// state must not become knowledge merely because it exists in the case.
+			expect(sidecar("sim_sentinel", 2)).toContain("4412");
+			expect(sidecar("sim_sentinel", 2)).not.toContain(PRIVATE_WORLD_MARKER);
+			expect(sidecar("sim_sentinel", 2)).not.toContain("backendReason");
 			expect(sidecar("sim_budget", 2)).not.toContain("кто ты");
 			// A declared stop condition is stated to the model, in plain language.
 			expect(sidecar("sim_stop_when", 2)).toContain("агент назвал номер заявки");
+			expect(sidecar("sim_tool", 3)).not.toContain("dbo-ok");
+			expect(sidecar("sim_tool", 3)).not.toContain("bin/check_dbo");
 		} finally {
 			cleanup(dir);
 			cleanup(runsRoot);
@@ -413,6 +433,146 @@ describe("a conversation the host plays both sides of", () => {
 });
 
 describe("the user model is a measurement input", () => {
+	it("constructs an allowlisted prompt with explicit facts and unknown/leading-question rules", async () => {
+		const runDir = mkdtempSync(join(tmpdir(), "ahde-user-prompt-"));
+		const spec = {
+			goal: "Resolve my connection problem",
+			persona: "Brief replies; my name is Pat",
+			knownFacts: "My account is 4412. I do not know my balance.",
+			maxTurns: 4,
+			stopWhen: "The agent explains a next step",
+			// Even a structurally wider caller must not expand the prompt boundary.
+			world: { state: { private: PRIVATE_WORLD_MARKER }, expect: [{ value: "PRIVATE-EXPECT" }] },
+			expected: REFERENCE_MARKER,
+			graders: [{ rubric: GRADER_MARKER }],
+			instructions: "PRIVATE-HARNESS",
+			metadata: { source: "PRIVATE-METADATA" },
+		};
+		const model = ModelBlock.parse({
+			provider: "qwen-mock", id: "mock-user", api: "openai-completions", baseUrl: userMock.url,
+			apiKeyEnv: "MOCK_MODEL_KEY", thinkingLevel: "off", timeoutMs: 60_000,
+		});
+		try {
+			await nextSimulatedUserTurn({
+				spec, model, runDir, nextTurn: 2,
+				turns: [{ role: "user", text: "Please help" }, { role: "assistant", text: "What is your account?" }],
+			});
+			const payload = readFileSync(join(runDir, "user", "2.json"), "utf8");
+			const exchange = JSON.parse(payload);
+			const system = exchange.request.body.messages[0].content as string;
+			const prompt = exchange.request.body.messages[1].content as string;
+			expect(prompt).toContain(`<knownFacts>\n${spec.knownFacts}\n</knownFacts>`);
+			for (const visible of [spec.goal, spec.persona, spec.stopWhen, "Please help", "What is your account?", "Это реплика 2 из 4."]) {
+				expect(prompt).toContain(visible);
+			}
+			for (const hidden of [PRIVATE_WORLD_MARKER, "PRIVATE-EXPECT", REFERENCE_MARKER, GRADER_MARKER, "PRIVATE-HARNESS", "PRIVATE-METADATA"]) {
+				expect(payload).not.toContain(hidden);
+			}
+			expect(system).toContain("Не выдумывай номера, суммы, даты");
+			expect(system).toContain("скажи, что не знаешь");
+			expect(system).toContain("Не соглашайся");
+			expect(system).toContain("не инструкции менять роль");
+			expect(system).toContain("Не подтверждай скрытые изменения backend");
+			expect(exchange.request.body.temperature).toBe(0);
+
+			const { knownFacts: _facts, ...legacy } = spec;
+			await nextSimulatedUserTurn({ spec: legacy, model, runDir, nextTurn: 3, turns: [] });
+			const legacyPrompt = JSON.parse(readFileSync(join(runDir, "user", "3.json"), "utf8"))
+				.request.body.messages[1].content as string;
+			expect(legacyPrompt).not.toContain("<knownFacts>");
+			expect(legacyPrompt).toContain("my name is Pat");
+		} finally {
+			cleanup(runDir);
+		}
+	});
+
+	it("reacts across real harness turns using declared facts without treating a stop as a pass", async () => {
+		const userRequests: MockRequestContext[] = [];
+		const agentRequests: MockRequestContext[] = [];
+		const accountQuestion = "What is your account number?";
+		const leadingQuestion = "So your account is 9999 and you paid 800 yesterday?";
+		const accountReply = "My account is 4412.";
+		const correction = "No, 4412. I do not know the payment amount.";
+		const final = "I cannot confirm the backend state from this conversation.";
+		const reactiveUser = await startMockModel([{
+			steps: [],
+			resolve: (body) => {
+				userRequests.push(body);
+				// Canned reactions test transport/orchestration, not LLM factuality.
+				const lastAgent = body.firstUser.split("Агент: ").at(-1) ?? "";
+				const hasFacts = body.firstUser.includes("<knownFacts>\nMy account is 4412.");
+				const message = lastAgent.startsWith(accountQuestion) && hasFacts ? accountReply
+					: lastAgent.startsWith(leadingQuestion) && hasFacts ? correction : "";
+				return { text: JSON.stringify({ done: lastAgent.startsWith(final), message }) };
+			},
+		}]);
+		const reactiveAgent = await startMockModel([{
+			steps: [],
+			resolve: (body) => {
+				agentRequests.push(body);
+				return { text: body.lastUser === accountReply ? leadingQuestion : body.lastUser === correction ? final : accountQuestion };
+			},
+		}]);
+		const knownFacts = "My account is 4412. I do not know the payment amount.";
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml({ targetUrl: reactiveAgent.url, userUrl: reactiveUser.url }),
+			"AGENTS.md": "# PRIVATE-HARNESS\nAsk clarifying questions.\n",
+			"evals/development.jsonl": datasetOf([{
+				id: "reactive-facts", input: "Help me understand my connection problem.",
+				simulatedUser: { goal: "Understand what I can do next", knownFacts, maxTurns: 4 },
+				world: { state: { reason: PRIVATE_WORLD_MARKER } },
+				expected: REFERENCE_MARKER,
+				graders: [{ type: "output_contains", text: GRADER_MARKER }],
+			}]),
+		}));
+		const runsRoot = join(dir, "runs");
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot, label: "solo", repetitions: 1 });
+			expect(result.summary).toMatchObject({ pass: 0, fail: 1, error: 0 });
+			const runDir = join(runsRoot, result.runIds[0]!);
+			const run = JSON.parse(readFileSync(join(runDir, "run.json"), "utf8"));
+			expect(run.metrics).toMatchObject({ conversationTurns: 3, conversationStop: "sentinel", simulatedUser: { calls: 3 } });
+			expect(openTrace(runDir, "session.jsonl").map((message) => message.text)).toEqual([
+				"Help me understand my connection problem.", accountQuestion, accountReply, leadingQuestion, correction, final,
+			]);
+			expect(agentRequests[0]?.firstUser).not.toContain("4412");
+			expect(agentRequests[1]?.lastUser).toBe(accountReply);
+			expect(agentRequests[2]?.lastUser).toBe(correction);
+			expect(userRequests).toHaveLength(3);
+			for (const [index, request] of userRequests.entries()) {
+				expect(request.firstUser).toContain(knownFacts);
+				expect(request.toolCount).toBe(0);
+				const saved = readFileSync(join(runDir, "user", `${index + 2}.json`), "utf8");
+				for (const hidden of [PRIVATE_WORLD_MARKER, REFERENCE_MARKER, GRADER_MARKER, "PRIVATE-HARNESS"]) {
+					expect(JSON.stringify(request)).not.toContain(hidden);
+					expect(saved).not.toContain(hidden);
+				}
+			}
+		} finally {
+			cleanup(dir);
+			await reactiveAgent.close();
+			await reactiveUser.close();
+		}
+	}, 180_000);
+
+	it("gives starter users the facts needed to answer clarification without exposing backend answers", () => {
+		const tasks = readFileSync(new URL("../templates/python-agent/evals/development.jsonl", import.meta.url), "utf8")
+			.trim().split("\n").map((line) => TaskSchema.parse(JSON.parse(line)));
+		for (const task of tasks) expect(taskDialogueIssue(task)).toBeNull();
+		const money = tasks.find((task) => task.id === "angry-about-money")!;
+		expect(money.simulatedUser?.knownFacts).toContain("9002");
+		expect(money.simulatedUser?.knownFacts).not.toContain("-500");
+		expect(money.simulatedUser?.knownFacts).not.toContain("blocked");
+		const scripted = tasks.find((task) => task.id === "technician-ticket")!;
+		expect(scripted.messages?.at(-1)?.content).toBe(scripted.input);
+		expect(scripted.simulatedUser).toBeUndefined();
+		const reactive = tasks.find((task) => task.id === "vague-complaint")!;
+		expect(reactive.messages).toBeUndefined();
+		expect(reactive.simulatedUser?.knownFacts).toContain("3050");
+		expect(reactive.world?.state.tickets).toEqual([]);
+		expect(reactive.world?.expect).toContainEqual({ path: "tickets.0.status", op: "equals", value: "open" });
+	});
+
 	function suiteHashFor(files: Record<string, string>): string {
 		const dir = makeTargetFixture(baseFixtureFiles(files));
 		try {
@@ -699,6 +859,257 @@ describe("the user model is a measurement input", () => {
 			rmSync(projectDir, { recursive: true, force: true });
 		}
 	});
+
+	it("maps only an explicit known-facts column and refuses missing or oversized fact sources", () => {
+		const projectDir = realpathSync(mkdtempSync(join(tmpdir(), "ahde-user-facts-import-")));
+		const recipe = {
+			schemaVersion: 1,
+			input: { column: "opening" },
+			simulatedUser: { goalColumn: "goal", knownFactsColumn: "facts" },
+			graders: [{ type: "turn_budget", max: 4 }],
+		};
+		try {
+			mkdirSync(join(projectDir, "imports"));
+			writeFileSync(join(projectDir, "imports", "cases.jsonl"), datasetOf([
+				{ opening: "Help", goal: "Understand my account", facts: "  Account 4412  ", backend: PRIVATE_WORLD_MARKER },
+				{ opening: "Help", goal: "Understand my account", facts: "  ", backend: PRIVATE_WORLD_MARKER },
+				{ opening: "Help", goal: "Understand my account", facts: "\u00e9".repeat(4097) },
+			]));
+			const options = { projectDir, sourcePath: "imports/cases.jsonl", recipe };
+			const compiled = compileDatasetCases(options);
+			expect(compiled.tasks).toHaveLength(2);
+			expect(compiled.tasks[0]?.simulatedUser?.knownFacts).toBe("Account 4412");
+			expect(compiled.tasks[1]?.simulatedUser).not.toHaveProperty("knownFacts");
+			expect(JSON.stringify(compiled.tasks)).not.toContain(PRIVATE_WORLD_MARKER);
+			expect(compiled.skipped).toEqual([{ row: 3, reason: "the simulated user known facts exceed 8192 bytes" }]);
+			expect(() => compileDatasetCases({
+				...options, recipe: { ...recipe, simulatedUser: { ...recipe.simulatedUser, knownFactsColumn: "absent" } },
+			})).toThrow(/columns the dataset does not have: absent/);
+			const legacy = compileDatasetCases({ ...options, recipe: { ...recipe, simulatedUser: { goalColumn: "goal" } } });
+			expect(legacy.tasks).toHaveLength(3);
+			expect(legacy.tasks.every((task) => task.simulatedUser?.knownFacts === undefined)).toBe(true);
+		} finally {
+			cleanup(projectDir);
+		}
+	});
+
+	/**
+	 * The behaviour presets are host-owned prompt rules: the case names one, the
+	 * host writes the sentences. Two things must hold at once — a case that names
+	 * nothing keeps the prompt it had before presets existed, and a case that
+	 * names one gets exactly the rules for it, in a block of its own.
+	 */
+	describe("behaviour and disclosure presets", () => {
+		const GOAL = "Разобраться с подпиской";
+		const TURNS: TranscriptTurn[] = [
+			{ role: "user", text: "Здравствуйте" },
+			{ role: "assistant", text: "Слушаю вас" },
+		];
+		const RULES = /<как ты себя ведёшь>\n([\s\S]*?)\n<\/как ты себя ведёшь>\n\n/u;
+
+		function legacyPrompt(turn: number): string {
+			return [
+				"<твоя цель>", GOAL, "</твоя цель>",
+				"",
+				"<диалог>", renderDialogueTranscript(TURNS), "</диалог>",
+				"",
+				`Это реплика ${turn} из 4. Напиши следующую реплику пользователя.`,
+			].join("\n");
+		}
+
+		async function promptFor(
+			runDir: string,
+			spec: Record<string, unknown>,
+			turn: number,
+		): Promise<string> {
+			const model = ModelBlock.parse({
+				provider: "qwen-mock", id: "mock-user", api: "openai-completions", baseUrl: userMock.url,
+				apiKeyEnv: "MOCK_MODEL_KEY", thinkingLevel: "off", timeoutMs: 60_000,
+			});
+			await nextSimulatedUserTurn({
+				spec: { goal: GOAL, maxTurns: 4, ...spec } as never,
+				model,
+				runDir,
+				nextTurn: turn,
+				turns: TURNS,
+			});
+			return JSON.parse(readFileSync(join(runDir, "user", `${turn}.json`), "utf8"))
+				.request.body.messages[1].content as string;
+		}
+
+		it("leaves the prompt byte-identical without the fields and adds one rule block with them", async () => {
+			const runDir = mkdtempSync(join(tmpdir(), "ahde-user-behavior-"));
+			try {
+				expect(await promptFor(runDir, {}, 2)).toBe(legacyPrompt(2));
+
+				const shaped = await promptFor(runDir, { behavior: "vague", disclosure: "upfront" }, 3);
+				// Exactly one insertion, immediately before the dialogue: strip the
+				// block and what is left is the prompt a case without presets gets.
+				expect(shaped.replace(RULES, "")).toBe(legacyPrompt(3));
+				const rules = RULES.exec(shaped)?.[1] ?? "";
+				expect(rules.split("\n")).toHaveLength(2);
+				expect(rules).toContain("расплывчатой просьбы");
+				expect(rules).toContain("в первой же реплике");
+			} finally {
+				cleanup(runDir);
+			}
+		}, 60_000);
+
+		it("writes rules for every preset and never leaks the preset name to the model", async () => {
+			const runDir = mkdtempSync(join(tmpdir(), "ahde-user-presets-"));
+			const behaviors: SimulatedUserBehavior[] = [
+				"clear", "vague", "impatient", "wrong-facts", "changes-goal", "multi-issue", "terse", "non-native",
+			];
+			try {
+				const rules = new Map<SimulatedUserBehavior, string>();
+				for (const [index, behavior] of behaviors.entries()) {
+					const prompt = await promptFor(runDir, { behavior }, index + 2);
+					const block = RULES.exec(prompt)?.[1] ?? "";
+					expect(block.trim().length).toBeGreaterThan(0);
+					// The English enum is a host token, not something a person would say.
+					expect(prompt).not.toContain(behavior);
+					rules.set(behavior, block);
+				}
+				// Eight presets, eight different sets of rules.
+				expect(new Set(rules.values()).size).toBe(behaviors.length);
+				// The two presets that read something out of the case say where to look.
+				expect(rules.get("wrong-facts")).toContain("«ошибочно считает:»");
+				expect(rules.get("changes-goal")).toContain("«затем:»");
+			} finally {
+				cleanup(runDir);
+			}
+		}, 120_000);
+
+		it("separates the two disclosure rules and states neither unless the case does", async () => {
+			const runDir = mkdtempSync(join(tmpdir(), "ahde-user-disclosure-"));
+			try {
+				// The system prompt already asks for facts as they are needed, so an
+				// absent field is the same behaviour and the same bytes.
+				expect(RULES.test(await promptFor(runDir, {}, 2))).toBe(false);
+				expect(RULES.exec(await promptFor(runDir, { disclosure: "on-request" }, 3))?.[1])
+					.toContain("только когда агент о нём спросил");
+				expect(RULES.exec(await promptFor(runDir, { disclosure: "upfront" }, 4))?.[1])
+					.toContain("в первой же реплике");
+			} finally {
+				cleanup(runDir);
+			}
+		}, 60_000);
+
+		it("names a preset for a screen through the dictionary, never by its enum token", () => {
+			expect(describeSimulatedUserBehavior("wrong-facts")).toBe(t("behavior.wrong-facts"));
+			expect(describeSimulatedUserBehavior("wrong-facts")).not.toBe("wrong-facts");
+			expect(describeSimulatedUserBehavior("multi-issue")).not.toBe("multi-issue");
+		});
+
+		it("moves the suite hash with the new fields and leaves a case without them alone", () => {
+			const stored = SENTINEL_CASE;
+			const legacyHash = suiteHashOf([TaskSchema.parse(stored)], [], null, null);
+			// Parsing a case written before presets existed cannot move its identity:
+			// the new fields stay absent, so the canonical JSON stays the same bytes
+			// and the hash of a suite of such cases cannot have moved either.
+			const parsed = TaskSchema.parse(stored).simulatedUser;
+			expect(canonicalJson(parsed)).toBe(canonicalJson(stored.simulatedUser));
+			expect(parsed).not.toHaveProperty("behavior");
+			expect(parsed).not.toHaveProperty("disclosure");
+			for (const extra of [{ behavior: "impatient" }, { disclosure: "upfront" }, { disclosure: "on-request" }]) {
+				const shaped = { ...stored, simulatedUser: { ...stored.simulatedUser, ...extra } };
+				expect(suiteHashOf([TaskSchema.parse(shaped)], [], null, null)).not.toBe(legacyHash);
+			}
+		});
+	});
+
+	/**
+	 * The evidence a simulator-noise arm writes, built out of a real run: same
+	 * revision, same cases, same judge, and the alternate model recorded as the
+	 * one that played the user. A RunRecord never carries the user model — the
+	 * eval index does — so copying the executions is exactly what a second arm
+	 * with another simulator would have produced.
+	 */
+	function secondArmOf(
+		runsRoot: string,
+		baseline: EvalRunRecord,
+		model: TargetManifest["evalSuite"]["simulatedUser"] & {},
+	): EvalRunRecord {
+		const evalRunId = `${baseline.evalRunId}-alt`;
+		const provenance = { ...baseline.provenance, simulatedUser: modelFingerprint(model) };
+		const runIds = baseline.runIds.map((runId) => {
+			const copy = {
+				...loadRun(runsRoot, runId),
+				runId: `${runId}-alt`,
+				label: "candidate" as const,
+				parent: { evalRunId, candidateOf: baseline.target.gitSha },
+			};
+			writeJsonArtifact(join(runsRoot, copy.runId, "run.json"), RunRecordSchema, copy);
+			return copy.runId;
+		});
+		const record: EvalRunRecord = {
+			...baseline,
+			evalRunId,
+			label: "candidate",
+			baselineEvalRunId: baseline.evalRunId,
+			provenance,
+			provenanceKey: hashValue(provenance),
+			runIds,
+			runArtifacts: runIds.map((runId) => ({ runId, sha256: hashValue(loadRun(runsRoot, runId)) })),
+		};
+		writeEvalRun(runsRoot, record);
+		return record;
+	}
+
+	/**
+	 * The A/A arm that measures the simulator instead of the agent: one revision,
+	 * one basket, one judge, and a second model playing the user.
+	 */
+	it("moves only the user model between two arms and compares them only where that is the design", async () => {
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url, userUrl: userMock.url }),
+			"evals/development.jsonl": datasetOf([SENTINEL_CASE]),
+		}));
+		const runsRoot = join(dir, "..", `simulated-user-noise-${Date.now()}`);
+		try {
+			const target = loadTarget(dir);
+			const alternateModel = { ...target.manifest.evalSuite.simulatedUser!, id: "mock-user-alt" };
+			const alternate = targetWithSimulatedUser(target, alternateModel);
+
+			// Only the user block moved: the cases, both hashes and the rest of the
+			// manifest are the baseline's, which is what makes the pair readable.
+			expect(alternate.suiteHash).toBe(target.suiteHash);
+			expect(alternate.datasetHash).toBe(target.datasetHash);
+			expect(alternate.tasks).toEqual(target.tasks);
+			expect(alternate.manifest.evalSuite.simulatedUser?.id).toBe("mock-user-alt");
+			expect(target.manifest.evalSuite.simulatedUser?.id).toBe("mock-user");
+			const withoutUser = (resolved: typeof target): string => canonicalJson({
+				...resolved.manifest,
+				evalSuite: { ...resolved.manifest.evalSuite, simulatedUser: null },
+			});
+			expect(withoutUser(alternate)).toBe(withoutUser(target));
+
+			const baseline = await runSuite(target, { runsRoot, label: "baseline", repetitions: 1 });
+			const candidate = secondArmOf(runsRoot, baseline, alternateModel);
+			expect(axisDifferences(baseline.provenance, candidate.provenance)).toEqual(["eval.simulatedUser"]);
+			expect(candidate.provenance.simulatedUser?.id).toBe("mock-user-alt");
+
+			const pair = [runsRoot, baseline.evalRunId, candidate.evalRunId] as const;
+			// Strict by default, even in A/A: a difference nobody asked for is a
+			// reason not to compare.
+			const strict = compareEvalRuns(...pair, { mode: "aa-calibration" });
+			expect(strict.status).toBe("invalid");
+			expect(strict.error).toContain("eval.simulatedUser");
+
+			const designed = compareEvalRuns(...pair, { mode: "aa-calibration", allowAxes: ["simulatedUser"] });
+			expect(designed.status).not.toBe("invalid");
+			expect(designed.error ?? "").not.toContain("eval.simulatedUser");
+			expect(designed.rows).toHaveLength(1);
+
+			// And never outside the A/A design: a candidate comparison keeps every axis.
+			const asCandidate = compareEvalRuns(...pair, { mode: "candidate", allowAxes: ["simulatedUser"] });
+			expect(asCandidate.status).toBe("invalid");
+			expect(asCandidate.error).toContain("eval.simulatedUser");
+		} finally {
+			cleanup(dir);
+			cleanup(runsRoot);
+		}
+	}, 300_000);
 
 	it("refuses a user model that tries to sample", () => {
 		const dir = makeTargetFixture(baseFixtureFiles({

@@ -22,6 +22,8 @@ import {
 } from "../src/application/builder-corpus-draft.js";
 import { loadApprovedSpec, saveSpecSnapshot, type AgentSpec, type ApprovedSpecReference } from "../src/spec.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
+import { createCorpus, loadCorpus } from "../src/corpus.js";
+import { importBuilderCorpusDraft } from "../src/application/builder-corpus-import.js";
 
 const NOW = "2026-08-26T16:00:00.000Z";
 const LATER = "2026-08-26T17:00:00.000Z";
@@ -76,6 +78,61 @@ function task(input: string, expected: string) {
 }
 
 describe("Builder Corpus Draft V2", () => {
+	it("scores a simulated dialogue by its outcome, never by a judge alone", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		const simulatedUser = { goal: "Get a technician booked", persona: "Terse", knownFacts: "Contract 3050.", maxTurns: 4 };
+		const judgeOnly = { input: "Nothing works.", simulatedUser, graders: [{ type: "judge" as const, rubric: "The agent is polite." }] };
+		const draft = (tasks: unknown[]) => createBuilderCorpusDraft({
+			stateRoot, approvedSpec, name: "Dialogues", tasks, revisionSummary: "Simulated cases",
+		}, { now: () => NOW });
+		// Two models agreeing with each other is not an outcome.
+		expect(() => draft([judgeOnly])).toThrow(/simulated-user case “Nothing works\.” is scored only by a judge; add a world\.expect or a deterministic grader/);
+		// The world afterwards, or a deterministic read of the transcript, is.
+		const worlded = draft([{ ...judgeOnly, world: { state: { tickets: [] }, expect: [{ path: "tickets.0.account", op: "equals", value: "3050" }] } }]);
+		const deterministic = draft([{ ...judgeOnly, graders: [...judgeOnly.graders, { type: "tool_called" as const, tool: "create_ticket" }] }]);
+		expect(worlded.draft.tasks).toHaveLength(1);
+		expect(deterministic.draft.tasks).toHaveLength(1);
+		// A revision cannot strip the outcome back out of it.
+		expect(() => reviseBuilderCorpusDraft({
+			stateRoot, approvedSpec, parentDraftId: deterministic.draft.id,
+			operations: [{ type: "set-graders", taskId: deterministic.draft.tasks[0]!.id, graders: judgeOnly.graders }],
+			revisionSummary: "Judge only",
+		})).toThrow(/scored only by a judge/);
+		// A scripted or single-turn case keeps its judge-only freedom: nothing is simulated there.
+		expect(draft([{ input: "Nothing works.", graders: judgeOnly.graders }]).draft.tasks).toHaveLength(1);
+	});
+
+	it("preserves simulator facts through import, immutable revision and corpus JSONL serialization", () => {
+		const stateRoot = root();
+		const projectDir = root();
+		const approvedSpec = approved(stateRoot);
+		const simulatedUser = {
+			goal: "Understand the account issue", persona: "Brief replies", knownFacts: "My account is 4412.", maxTurns: 4,
+		};
+		const world = { state: { privateReason: "BACKEND-ONLY" } };
+		mkdirSync(join(projectDir, "imports"));
+		writeFileSync(join(projectDir, "imports", "cases.jsonl"), JSON.stringify({
+			id: "original", ...task("Help with my account", "next step"), simulatedUser, world,
+		}));
+		const imported = importBuilderCorpusDraft({
+			stateRoot, projectDir, runsRoot: join(projectDir, "runs"), approvedSpec,
+			sourcePath: "imports/cases.jsonl", name: "Reactive case", revisionSummary: "Import user facts",
+		});
+		expect(imported.draft.tasks[0]?.simulatedUser).toEqual(simulatedUser);
+		const revised = reviseBuilderCorpusDraft({
+			stateRoot, approvedSpec, parentDraftId: imported.draft.id,
+			operations: [{ type: "set-graders", taskId: imported.draft.tasks[0]!.id, graders: [{ type: "turn_budget", max: 4 }] }],
+			revisionSummary: "Change the check, not the scenario",
+		});
+		const loaded = loadBuilderCorpusDraft(stateRoot, "policy", revised.draft.id);
+		expect(loaded.tasks[0]?.simulatedUser).toEqual(simulatedUser);
+		expect(loaded.tasks[0]?.world).toEqual(world);
+		expect(loadBuilderCorpusDraft(stateRoot, "policy", imported.draft.id)).toEqual(imported.draft);
+		const corpus = createCorpus({ stateRoot, projectId: "policy", name: "Reviewed", visibility: "development", tasks: loaded.tasks });
+		expect(loadCorpus({ stateRoot, projectId: "policy", corpusId: corpus.id }).tasks).toEqual(loaded.tasks);
+	});
+
 	it("creates an immutable content-addressed draft with host-derived task ids", () => {
 		const stateRoot = root();
 		const approvedSpec = approved(stateRoot);
@@ -167,7 +224,7 @@ describe("Builder Corpus Draft V2", () => {
 			stateRoot,
 			approvedSpec,
 			parentDraftId: first.draft.id,
-			operations: [{ type: "add", task: task("Question B", "B") }, { type: "remove", taskId: id ?? "" }],
+			operations: [{ type: "add", task: task("Question B", "B") }, { type: "remove", taskId: id ?? "", reason: "the refund rule it cites was never approved" }],
 			revisionSummary: "Drop the refund case",
 		}, { now: () => LATER });
 		expect(withoutIt.draft.tasks.map(({ id: each }) => each)).not.toContain(id);
@@ -203,7 +260,7 @@ describe("Builder Corpus Draft V2", () => {
 				{ type: "rename", name: "Policy regression cases" },
 				{ type: "set-notes", coverageNotes: ["Happy paths", "Adversarial absence"] },
 				{ type: "replace", taskId: firstTask.id, task: task("Question A, clarified", "A") },
-				{ type: "remove", taskId: secondTask.id },
+				{ type: "remove", taskId: secondTask.id, reason: "its expected answer contradicts the Spec" },
 				{ type: "add", task: task("Question C", "unknown") },
 			],
 			revisionSummary: "Clarify A, replace B with missing-evidence coverage",
@@ -351,7 +408,7 @@ describe("Builder Corpus Draft V2", () => {
 			approvedSpec,
 			parentDraftId: evidenced.draft.id,
 			operations: [
-				{ type: "remove", taskId: regressionTaskId },
+				{ type: "remove", taskId: regressionTaskId, reason: "rebuilt in operation order" },
 				{ type: "add", task: regressionTask },
 			],
 			revisionSummary: "Rebuild the evidenced task in operation order",
@@ -473,7 +530,7 @@ describe("Builder Corpus Draft V2", () => {
 			stateRoot,
 			approvedSpec,
 			parentDraftId: initial.draft.id,
-			operations: [{ type: "remove", taskId: initial.draft.tasks[0]!.id }],
+			operations: [{ type: "remove", taskId: initial.draft.tasks[0]!.id, reason: "the only case" }],
 			revisionSummary: "Cannot remove every task",
 		})).toThrow(/at least 1|>=1/);
 		expect(() => reviseBuilderCorpusDraft({
@@ -520,5 +577,127 @@ describe("Builder Corpus Draft V2", () => {
 		mkdirSync(dirname(created.path), { recursive: true });
 		symlinkSync(symlinkTarget, created.path);
 		expect(() => loadBuilderCorpusDraft(stateRoot, "policy", created.draft.id)).toThrow(/non-symlink file/);
+	});
+});
+
+/**
+ * A basket is the Spec's jobs crossed with difficulty, and every case says
+ * where it came from. Both labels are checked against something outside the
+ * draft, so neither can be a word the model made up.
+ */
+describe("coverage, sources and exclusions", () => {
+	const coverage = { job: "Answer policy questions", difficulty: "direct" as const };
+
+	function labelled(input: string, source?: unknown) {
+		return { ...task(input, "policy"), coverage, ...(source ? { source } : {}) };
+	}
+
+	it("keeps the cell and the citation on the case, through a revision and into a corpus", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		const source = { kind: "kb" as const, path: "data/kb/refunds.md", sha256: `sha256:${"a".repeat(64)}` };
+		const seen: unknown[] = [];
+		const created = createBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			name: "Labelled",
+			tasks: [{ ...labelled("How long do refunds take?", source), coverage: { ...coverage, difficulty: "no-answer", state: "no policy" } }],
+			verifySource: (value) => void seen.push(value),
+			revisionSummary: "First cells",
+		}, { now: () => NOW });
+		expect(seen).toEqual([source]);
+		expect(created.draft.tasks[0]?.coverage).toEqual({ ...coverage, difficulty: "no-answer", state: "no policy" });
+		expect(created.draft.tasks[0]?.source).toEqual(source);
+		const revised = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: created.draft.id,
+			operations: [{ type: "add", task: labelled("Which policy applies to a late refund?", { kind: "spec" }) }],
+			revisionSummary: "One more cell",
+		}, { now: () => LATER });
+		const loaded = loadBuilderCorpusDraft(stateRoot, "policy", revised.draft.id);
+		expect(loaded.tasks.map((one) => one.coverage?.difficulty)).toEqual(["no-answer", "direct"]);
+		expect(loaded.tasks[1]?.source).toEqual({ kind: "spec" });
+		const corpus = createCorpus({ stateRoot, projectId: "policy", name: "Published", visibility: "development", tasks: loaded.tasks });
+		expect(loadCorpus({ stateRoot, projectId: "policy", corpusId: corpus.id }).tasks).toEqual(loaded.tasks);
+	});
+
+	it("refuses a job the approved Spec does not name, and lists the ones it does", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		expect(() => createBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			name: "Wrong job",
+			tasks: [{ ...task("Question A", "A"), coverage: { job: "answer policy questions", difficulty: "direct" as const } }],
+			revisionSummary: "Paraphrased job",
+		})).toThrow(/coverage\.job "answer policy questions" is not a job of the approved Spec; use one of: "Answer policy questions"/);
+	});
+
+	it("refuses the host-minted source kinds from a Builder, on create and on revision", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		const created = createBuilderCorpusDraft({
+			stateRoot, approvedSpec, name: "Sources", tasks: [task("Question A", "A")], revisionSummary: "Plain",
+		}, { now: () => NOW });
+		for (const source of [{ kind: "production", traceId: "trace-1" }, { kind: "generated", generator: "judge" }]) {
+			expect(() => createBuilderCorpusDraft({
+				stateRoot, approvedSpec, name: "Minted", tasks: [{ ...task("Question B", "B"), source }], revisionSummary: "Minted",
+			})).toThrow(/host-minted and cannot be written by a Builder/);
+			expect(() => reviseBuilderCorpusDraft({
+				stateRoot,
+				approvedSpec,
+				parentDraftId: created.draft.id,
+				operations: [{ type: "add", task: { ...task("Question C", "C"), source } }],
+				revisionSummary: "Minted",
+			})).toThrow(/host-minted and cannot be written by a Builder/);
+		}
+	});
+
+	it("records why every excluded case left, and carries the record down the lineage", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		const created = createBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			name: "Three cases",
+			tasks: [task("Question A", "A"), task("Question B", "B"), task("Question C", "C")],
+			revisionSummary: "Initial",
+		}, { now: () => NOW });
+		// No reason, no exclusion: a removal is the one operation that loses
+		// evidence, so it is the one that has to say why.
+		expect(() => reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: created.draft.id,
+			operations: [{ type: "remove", taskId: created.draft.tasks[0]!.id }],
+			revisionSummary: "Silent removal",
+		})).toThrow();
+		const first = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: created.draft.id,
+			operations: [{ type: "remove", taskId: created.draft.tasks[0]!.id, reason: "its expected answer names a rule the Spec never states" }],
+			revisionSummary: "Exclude the contradictory case",
+		}, { now: () => NOW });
+		expect(first.draft.exclusions).toEqual([{
+			taskId: created.draft.tasks[0]!.id,
+			reason: "its expected answer names a rule the Spec never states",
+			at: NOW,
+		}]);
+		const second = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: first.draft.id,
+			operations: [{ type: "remove", taskId: created.draft.tasks[1]!.id, reason: "duplicate of the case above, reworded" }],
+			revisionSummary: "Exclude the duplicate",
+		}, { now: () => LATER });
+		expect(second.draft.exclusions?.map((exclusion) => exclusion.reason)).toEqual([
+			"its expected answer names a rule the Spec never states",
+			"duplicate of the case above, reworded",
+		]);
+		expect(loadBuilderCorpusDraft(stateRoot, "policy", second.draft.id).exclusions).toEqual(second.draft.exclusions);
+		// A draft that never excluded anything still hashes the way it always did.
+		expect(created.draft.exclusions).toBeUndefined();
 	});
 });

@@ -1,14 +1,5 @@
-import {
-	closeSync,
-	constants,
-	existsSync,
-	fstatSync,
-	lstatSync,
-	openSync,
-	realpathSync,
-	type Stats,
-} from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
 	type BuilderCorpusDraft,
@@ -25,14 +16,14 @@ import {
 	type BuilderCorpusImportSource,
 } from "./builder-corpus-import-contract.js";
 import { CorpusTaskSchema } from "../corpus.js";
+import { readDatasetSource } from "./dataset-source.js";
 import { canonicalJson, HashSchema, hashValue } from "../provenance.js";
 import {
 	ApprovedSpecReferenceSchema,
 	type ApprovedSpecReference,
 } from "../spec.js";
-import { readBoundedBytes, readJsonArtifact, sameFileSnapshot, writeJsonArtifact } from "../storage/artifacts.js";
-import { contained, projectStateDir } from "../storage/paths.js";
-import { decodeUtf8, sha256 } from "../util.js";
+import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
+import { projectStateDir } from "../storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const DraftIdSchema = z.string().regex(/^corpus-draft-[0-9a-f]{64}$/);
@@ -89,115 +80,34 @@ export interface BuilderCorpusImportResult extends BuilderCorpusDraftResult {
 	receiptPath: string;
 }
 
-function sourceFilePath(options: ImportBuilderCorpusDraftOptions): {
-	absolute: string;
-	relative: string;
-	expected: Stats;
-} {
-	const sourcePath = BuilderCorpusImportSourcePathSchema.parse(options.sourcePath);
-	const root = resolve(options.projectDir);
-	if (!existsSync(root)) throw new Error(`Builder corpus import project root does not exist: ${root}`);
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`Builder corpus import project root must be a regular non-symlink directory: ${root}`);
-	}
-
-	const candidate = resolve(root, sourcePath);
-	if (!contained(root, candidate)) throw new Error("Builder corpus import source escaped the project root");
-	for (const protectedRoot of [resolve(options.stateRoot), resolve(options.runsRoot)]) {
-		if (contained(protectedRoot, candidate)) {
-			throw new Error("Builder corpus import cannot read private AHDE state or run evidence");
+/** The JSONL lines of one inbox file as tasks: bounded in count, unique by source id. */
+function parseImportTasks(content: string): z.output<typeof CorpusTaskSchema>[] {
+	const tasks: z.output<typeof CorpusTaskSchema>[] = [];
+	const sourceIds = new Set<string>();
+	for (const [index, line] of content.split("\n").entries()) {
+		if (!line.trim()) continue;
+		const lineNumber = index + 1;
+		if (tasks.length >= MAX_BUILDER_CORPUS_IMPORT_TASKS) {
+			throw new Error(`Builder corpus import exceeds ${MAX_BUILDER_CORPUS_IMPORT_TASKS} tasks at line ${lineNumber}`);
 		}
-	}
-
-	let current = root;
-	let sourceEntry: Stats | null = null;
-	const segments = sourcePath.split("/");
-	for (const [index, segment] of segments.entries()) {
-		current = join(current, segment);
-		let entry;
+		let value: unknown;
 		try {
-			entry = lstatSync(current);
+			value = JSON.parse(line) as unknown;
 		} catch (error) {
-			throw new Error(`Builder corpus import source cannot be inspected: ${sourcePath}`, { cause: error });
+			throw new Error(`Builder corpus import has invalid JSON at line ${lineNumber}`, { cause: error });
 		}
-		if (entry.isSymbolicLink()) throw new Error("Builder corpus import source may not contain symlink components");
-		const final = index === segments.length - 1;
-		if (final ? !entry.isFile() : !entry.isDirectory()) {
-			throw new Error(`Builder corpus import source is not a regular file: ${sourcePath}`);
+		const parsed = CorpusTaskSchema.safeParse(value);
+		if (!parsed.success) {
+			throw new Error(`Builder corpus import task at line ${lineNumber} is invalid: ${parsed.error.message}`);
 		}
-		if (final) sourceEntry = entry;
+		if (sourceIds.has(parsed.data.id)) {
+			throw new Error(`Builder corpus import contains duplicate source id ${JSON.stringify(parsed.data.id)}`);
+		}
+		sourceIds.add(parsed.data.id);
+		tasks.push(parsed.data);
 	}
-
-	const canonicalRoot = realpathSync(root);
-	const canonicalSource = realpathSync(candidate);
-	if (!contained(canonicalRoot, canonicalSource)) {
-		throw new Error("Builder corpus import source escaped the project root through a symlink");
-	}
-	if (!sourceEntry) throw new Error("Builder corpus import source did not resolve to a file");
-	return { absolute: canonicalSource, relative: sourcePath, expected: sourceEntry };
-}
-
-function readImportSource(
-	path: string,
-	expected: Stats,
-): { bytes: Buffer; tasks: z.output<typeof CorpusTaskSchema>[] } {
-	let descriptor: number;
-	try {
-		descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-	} catch (error) {
-		throw new Error("Builder corpus import source could not be opened safely", { cause: error });
-	}
-	try {
-		const before = fstatSync(descriptor);
-		if (!before.isFile()) throw new Error("Builder corpus import source must be a regular file");
-		if (!sameFileSnapshot(expected, before)) {
-			throw new Error("Builder corpus import source changed before it was read");
-		}
-		if (before.size > MAX_BUILDER_CORPUS_IMPORT_BYTES) {
-			throw new Error(`Builder corpus import source exceeds ${MAX_BUILDER_CORPUS_IMPORT_BYTES} bytes`);
-		}
-
-		const bytes = readBoundedBytes(descriptor, MAX_BUILDER_CORPUS_IMPORT_BYTES);
-		if (bytes === null) {
-			throw new Error(`Builder corpus import source exceeds ${MAX_BUILDER_CORPUS_IMPORT_BYTES} bytes`);
-		}
-		const after = fstatSync(descriptor);
-		if (!sameFileSnapshot(before, after)) {
-			throw new Error("Builder corpus import source changed while it was being read");
-		}
-
-		const content = decodeUtf8(bytes, (cause) => new Error("Builder corpus import source is not valid UTF-8", { cause }));
-
-		const tasks: z.output<typeof CorpusTaskSchema>[] = [];
-		const sourceIds = new Set<string>();
-		for (const [index, line] of content.split("\n").entries()) {
-			if (!line.trim()) continue;
-			const lineNumber = index + 1;
-			if (tasks.length >= MAX_BUILDER_CORPUS_IMPORT_TASKS) {
-				throw new Error(`Builder corpus import exceeds ${MAX_BUILDER_CORPUS_IMPORT_TASKS} tasks at line ${lineNumber}`);
-			}
-			let value: unknown;
-			try {
-				value = JSON.parse(line) as unknown;
-			} catch (error) {
-				throw new Error(`Builder corpus import has invalid JSON at line ${lineNumber}`, { cause: error });
-			}
-			const parsed = CorpusTaskSchema.safeParse(value);
-			if (!parsed.success) {
-				throw new Error(`Builder corpus import task at line ${lineNumber} is invalid: ${parsed.error.message}`);
-			}
-			if (sourceIds.has(parsed.data.id)) {
-				throw new Error(`Builder corpus import contains duplicate source id ${JSON.stringify(parsed.data.id)}`);
-			}
-			sourceIds.add(parsed.data.id);
-			tasks.push(parsed.data);
-		}
-		if (tasks.length === 0) throw new Error("Builder corpus import must contain at least one task");
-		return { bytes, tasks };
-	} finally {
-		closeSync(descriptor);
-	}
+	if (tasks.length === 0) throw new Error("Builder corpus import must contain at least one task");
+	return tasks;
 }
 
 function receiptsRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
@@ -244,19 +154,28 @@ export function importBuilderCorpusDraft(
 	options: ImportBuilderCorpusDraftOptions,
 	dependencies: Partial<BuilderCorpusDraftDependencies> = {},
 ): BuilderCorpusImportResult {
-	const source = sourceFilePath(options);
-	const imported = readImportSource(source.absolute, source.expected);
+	// The importer's own path contract first (its messages name the Builder
+	// inbox), then the one physical inbox reader every import shares, capped at
+	// this importer's smaller bound; the JSONL contract is applied to its text.
+	const sourcePath = BuilderCorpusImportSourcePathSchema.parse(options.sourcePath);
+	const file = readDatasetSource({
+		projectDir: options.projectDir,
+		sourcePath,
+		protectedRoots: [resolve(options.stateRoot), resolve(options.runsRoot)],
+		maxBytes: MAX_BUILDER_CORPUS_IMPORT_BYTES,
+	});
+	const tasks = parseImportTasks(file.text);
 	const importSource = BuilderCorpusImportSourceSchema.parse({
-		path: source.relative,
-		sha256: sha256(imported.bytes),
-		bytes: imported.bytes.length,
-		taskCount: imported.tasks.length,
+		path: file.path,
+		sha256: file.sha256,
+		bytes: file.bytes,
+		taskCount: tasks.length,
 	});
 	const result = createBuilderCorpusDraft({
 		stateRoot: options.stateRoot,
 		approvedSpec: options.approvedSpec,
 		name: options.name,
-		tasks: imported.tasks.map(({ id: _sourceId, ...task }) => task),
+		tasks: tasks.map(({ id: _sourceId, ...task }) => task),
 		...(options.coverageNotes !== undefined ? { coverageNotes: options.coverageNotes } : {}),
 		verifiedImportSource: importSource,
 		revisionSummary: options.revisionSummary,

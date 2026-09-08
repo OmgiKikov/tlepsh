@@ -22,7 +22,6 @@ import {
 	buildToolEnvironment,
 	toolConfinement,
 } from "../src/target/tool-broker.js";
-import { containerSandboxFingerprint } from "../src/target/container-backend.js";
 import { validateTargetToolArguments } from "../src/target/tool-manifest.js";
 import { EMPTY_PREPARED_TOOL_HOME_HASH } from "../src/target/tool-setup.js";
 import { openTrace, traceToolCalls } from "../src/trace.js";
@@ -214,16 +213,12 @@ describe("Target tool broker and Pi registration", () => {
 			.toBe("workspace-confined-v1");
 		expect(targetFilesystemConfinement({ workspaceMode: "direct", toolNames: ["read"], sandbox: "sandbox-exec" }))
 			.toBe("direct-unconfined-v1");
-		// A content-pinned container is a first-class confinement identity.
-			expect(targetFilesystemConfinement({
-				workspaceMode: "isolated",
-				toolNames: ["echo_json"],
-				sandbox: `container:docker@sha256:${"a".repeat(64)}:config:${"c".repeat(64)}`,
-		})).toBe("workspace-confined-v1");
+		// An identity the fingerprint schema does not know is refused here, never
+		// silently recorded as a confinement.
 		expect(() => targetFilesystemConfinement({
 			workspaceMode: "isolated",
 			toolNames: ["echo_json"],
-			sandbox: "container:docker@latest",
+			sandbox: "chroot" as never,
 		})).toThrow();
 	});
 
@@ -242,49 +237,6 @@ describe("Target tool broker and Pi registration", () => {
 			// A single-file tool needs no prepared home, so no backend choice is
 			// made up front; the broker's own detection is the fingerprint.
 			expect(runtime.sandboxFingerprint).toBe(runtime.sandboxBackend);
-			expect(runtime.sandboxFingerprint.startsWith("container:")).toBe(false);
-			expect(runtime.sandboxWarnings).toEqual([]);
-		} finally {
-			cleanup(dir);
-		}
-	});
-
-	it("selects the container backend for declared tools and never reports a host OS sandbox for one", () => {
-		const dir = toolFixture({
-			manifest: manifest().replace(
-				"  sandbox: best-effort\n",
-				`  sandbox: required\n  container:\n    runtime: docker\n    image: ahde/target@sha256:${"b".repeat(64)}\n    platform: linux/amd64\n`,
-			),
-		});
-		const scratch = join(dir, ".ahde-test-scratch-container");
-		try {
-			const target = loadTarget(dir);
-			const runtimeIdentity = {
-				version: "27.1.0",
-				os: "linux",
-				arch: "amd64",
-				daemonId: "test-daemon",
-				kernelVersion: "6.10.0-test",
-				driver: "overlay2",
-				cgroupDriver: "cgroupfs",
-				cgroupVersion: "2",
-				securityOptionsHash: "d".repeat(64),
-				contextHash: "e".repeat(64),
-			};
-			const runtime = createTargetToolRuntime({
-				target,
-				workspaceDir: dir,
-				scratchDir: scratch,
-				detectContainerRuntime: () => ({
-					runtime: "docker",
-					available: true,
-					identity: runtimeIdentity,
-				}),
-			});
-			const container = target.manifest.execution.container;
-			if (!container) throw new Error("container policy missing from fixture");
-			expect(runtime.sandboxFingerprint).toBe(containerSandboxFingerprint(container, runtimeIdentity));
-			expect(runtime.sandboxBackend).toBeNull();
 			expect(runtime.sandboxWarnings).toEqual([]);
 		} finally {
 			cleanup(dir);

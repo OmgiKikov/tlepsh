@@ -1,6 +1,4 @@
 export * from "./application/agent-log.js";
-export * from "./application/model-experiment.js";
-export * from "./application/watch.js";
 export * from "./application/candidate-experiment.js";
 export * from "./application/candidate-impact.js";
 export * from "./application/candidate-review.js";
@@ -54,10 +52,8 @@ export * from "./regrade.js";
 export * from "./report.js";
 export * from "./run-events.js";
 export * from "./runner.js";
-export * from "./serve/index.js";
 export * from "./storage/artifacts.js";
 export * from "./spec.js";
-export * from "./target/container-backend.js";
 export * from "./target/kb-tool.js";
 export * from "./target/runtime.js";
 export {

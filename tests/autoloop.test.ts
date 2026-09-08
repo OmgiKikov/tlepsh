@@ -1088,7 +1088,7 @@ describe("the shipped proposal author binds by surface, not by eval-run id", () 
 			// A recorded-only host directs the operator to the model-equipped Builder.
 			expect(empty.kind === "no-change" && empty.reason).toContain("Open Builder Pi to generate new hypotheses automatically");
 
-			// The Builder writes one, in the conversation, before `ahde improve` runs.
+			// The Builder writes one, in the conversation, before the improvement loop runs.
 			const recorded = await recordFixtureProposal(fixture, READY_INSTRUCTION);
 			const request = authorRequest(fixture, recorded.failureModeId);
 

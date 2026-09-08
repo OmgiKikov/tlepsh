@@ -506,6 +506,7 @@ function register(
 		/** `null` omits the presenter so the command layer builds one from `pi`. */
 		presenter?: TranscriptPresenter | null;
 		sendUserMessage?: (text: string) => void;
+		evidence?: RegisterOptions["evidence"];
 		importSealedHoldout?: RegisterOptions["importSealedHoldout"];
 		/** Extra host capabilities (appendEntry, sendMessage) for the presenter fallback tests. */
 		pi?: Record<string, unknown>;
@@ -532,6 +533,7 @@ function register(
 		actorId,
 		onWorkbenchChanged,
 		presenter: options.presenter === null ? createTranscriptPresenter(pi) : options.presenter ?? output.presenter,
+		evidence: options.evidence,
 		...(options.beginLiveTrace ? { beginLiveTrace: options.beginLiveTrace } : {}),
 		...(options.sendUserMessage ? { sendUserMessage: options.sendUserMessage } : {}),
 		...(options.importSealedHoldout ? { importSealedHoldout: options.importSealedHoldout } : {}),
@@ -1167,20 +1169,24 @@ describe("Builder Pi slash commands", () => {
 		const frames = host.setWidget.mock.calls
 			.map(([, content]) => content)
 			.filter((content): content is string[] => Array.isArray(content));
+		// The widget redraws on every event: the answer, the call and its result
+		// each had a frame while the run was live; the last frame holds the verdict.
+		const everShown = frames.map((frame) => frame.join("\n")).join("\n---\n");
 		const visible = (frames.at(-1) ?? []).join("\n");
-		expect(visible).toContain("provisional development trace");
+		expect(visible).toContain("AHDE · live run");
 		expect(visible).toContain(`open live trace · ${LIVE_URL}`);
-		expect(visible).toContain("assistant · Inspecting the route.");
-		expect(visible).toContain("tool → bash · {\"command\":\"pwd\"}");
-		expect(visible).toContain("tool ✓ bash · /tmp/ahde-demo");
-		expect(visible).toContain("grade ✓ · pass · 2/2 graders · ✓1 ✗0 so far");
+		expect(everShown).toContain("assistant · Inspecting the route.");
+		expect(everShown).toContain("tool → bash · {\"command\":\"pwd\"}");
+		expect(everShown).toContain("tool ✓ bash · /tmp/ahde-demo");
+		expect(visible).toContain("last: ✓");
+		expect(visible).toContain("last: ✓ task-routing · pass · 2/2 graders");
 		// The job segment reports the same measurement in the footer; the live
 		// widget stays the only writer of its own key.
 		expect(new Set(host.setStatus.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress", "ahde-job"]));
 		expect(new Set(host.setWidget.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress"]));
 		expect(host.setStatus).toHaveBeenCalledWith(
 			"ahde-run-progress",
-			expect.stringMatching(/^AHDE run graded 1\/1 · running 0 █{12} 100% · ✓1 ✗0 · task-routing · graded pass$/),
+			expect.stringMatching(/^AHDE run graded 1\/1 · running 0 █{12} 100% · ✓1 ✗0 · task-routing · graded pass · Observed public phases$/),
 		);
 		expect(host.setStatus).toHaveBeenCalledWith("ahde-run-progress", undefined);
 		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
@@ -1299,7 +1305,7 @@ describe("Builder Pi slash commands", () => {
 		progress.dispose();
 	});
 
-	it("counts the whole job the gate priced, not one eval run of it", () => {
+	it("keeps the whole job budget separate from the observed public phase", () => {
 		const setStatus = vi.fn();
 		const setWidget = vi.fn();
 		const progress = createRunProgressPresenter({ setStatus, setWidget });
@@ -1310,15 +1316,15 @@ describe("Builder Pi slash commands", () => {
 		// exam; each eval run only knows its own 90.
 		progress.plan(372);
 		progress.onRunEvent(runEvent({ type: "run_started" }, { ...leg, runId: "run-a", ordinal: 1 }));
-		expect(statuses().at(-1)).toContain("AHDE run graded 0/372 · running 1");
+		expect(statuses().at(-1)).toContain("AHDE run graded 0/90 · running 1");
 		progress.onRunEvent(runEvent(
 			{ type: "run_graded", outcome: "pass", passedGraders: 1, totalGraders: 1 },
 			{ ...leg, runId: "run-a", ordinal: 1 },
 		));
-		expect(statuses().at(-1)).toContain("AHDE run graded 1/372 · running 0");
-		// A later, smaller estimate never shrinks a job that already ran past it.
+		expect(statuses().at(-1)).toContain("AHDE run graded 1/90 · running 0");
+		// A later, smaller estimate never shrinks the approved budget.
 		progress.plan(90);
-		expect(statuses().at(-1)).toContain("/372");
+		expect(setWidget.mock.calls.at(-1)?.[1]).toContain("Planned budget: 372 executions, including private runs");
 		progress.dispose();
 	});
 
@@ -1341,24 +1347,65 @@ describe("Builder Pi slash commands", () => {
 		progress.dispose();
 	});
 
-	it("never splices interleaved assistant text from two runs into one line", () => {
+	it("gives every running execution its own line and never splices two answers into one", () => {
 		const setStatus = vi.fn();
 		const setWidget = vi.fn();
 		const progress = createRunProgressPresenter({ setStatus, setWidget });
 
 		progress.onRunEvent(runEvent(
 			{ type: "assistant_delta", delta: "first-run-text", truncated: false },
-			{ runId: "run-a", ordinal: 1, total: 2 },
+			{ runId: "run-a", taskId: "case-a", ordinal: 1, total: 2 },
 		));
 		progress.onRunEvent(runEvent(
 			{ type: "assistant_delta", delta: "second-run-text", truncated: false },
-			{ runId: "run-b", ordinal: 2, total: 2 },
+			{ runId: "run-b", taskId: "case-b", ordinal: 2, total: 2 },
+		));
+		// A second delta of the first run continues its own line only.
+		progress.onRunEvent(runEvent(
+			{ type: "assistant_delta", delta: " and more", truncated: false },
+			{ runId: "run-a", taskId: "case-a", ordinal: 1, total: 2 },
 		));
 
 		const frame = (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
-		expect(frame).toContain("assistant · first-run-text");
-		expect(frame).toContain("assistant · second-run-text");
+		expect(frame).toContain("▸ case-a · assistant · first-run-text and more");
+		expect(frame).toContain("▸ case-b · assistant · second-run-text");
 		expect(frame.join("\n")).not.toContain("first-run-textsecond-run-text");
+		progress.dispose();
+	});
+
+	it("draws public phase cells without estimating private work from them", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		let clock = 0;
+		const progress = createRunProgressPresenter({ setStatus, setWidget }, { now: () => clock });
+		const frame = (): string[] => (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
+		const four = { total: 4 };
+
+		progress.plan(4);
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...four, runId: "run-a", taskId: "a", ordinal: 1 }));
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...four, runId: "run-b", taskId: "b", ordinal: 2 }));
+		expect(frame()[1]).toMatch(/^▸▸··  0\/4 · ✓0 ✗0 · 0s$/);
+		clock = 30_000;
+		progress.onRunEvent(runEvent({ type: "run_graded", outcome: "pass", passedGraders: 1, totalGraders: 1 }, { ...four, runId: "run-a", taskId: "a", ordinal: 1 }));
+		progress.onRunEvent(runEvent({ type: "run_graded", outcome: "fail", passedGraders: 0, totalGraders: 2 }, { ...four, runId: "run-b", taskId: "b", ordinal: 2 }));
+		// Public timings cannot predict silent private runs. The last verdict closes the frame.
+		expect(frame()[1]).toBe("✓✗··  2/4 · ✓1 ✗1 · 30s");
+		expect(frame().at(-1)).toBe("last: ✗ b · fail · 0/2 graders");
+		// A cell never moves once drawn: a late start lands after the graded ones.
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...four, runId: "run-c", taskId: "c", ordinal: 3 }));
+		expect(frame()[1]).toMatch(/^✓✗▸· /);
+		expect(frame()).toContain("▸ c · started");
+		progress.dispose();
+	});
+
+	it("falls back to a bar when the job is too large for one cell per execution", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+		progress.plan(372);
+		progress.onRunEvent(runEvent({ type: "run_graded", outcome: "pass", passedGraders: 1, totalGraders: 1 }, { total: 90, runId: "run-a", ordinal: 1 }));
+		const frame = (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
+		expect(frame[1]).toMatch(/^█?░+ 1%  1\/90 · ✓1 ✗0/);
 		progress.dispose();
 	});
 
@@ -1394,6 +1441,7 @@ describe("Builder Pi slash commands", () => {
 			expect(frame.every((line) => !/[\r\n]/.test(line))).toBe(true);
 			expect(Buffer.byteLength(frame.join("\n"), "utf8")).toBeLessThanOrEqual(32 * 1024);
 		}
+		// The running line says what the run is doing now, not what it did first.
 		const finalFrame = frames.at(-1)?.join("\n") ?? "";
 		expect(finalFrame).toContain("tool → bash · 19:");
 		expect(finalFrame).not.toContain("tool → bash · 0:");
@@ -1734,6 +1782,98 @@ describe("Builder Pi slash commands", () => {
 		expect(host.confirm).not.toHaveBeenCalled();
 	});
 
+	it.each(["review", "test"])("pages every candidate case after /%s without skipping folded rows or offering a decision", async (firstCommand) => {
+		const cases = Array.from({ length: 73 }, (_, index) => ({
+			taskId: `case-${String(index + 1).padStart(3, "0")}`, input: null,
+			baseline: { pass: 0, total: 1, score: 0 }, candidate: { pass: 1, total: 1, score: 1 }, scoreDelta: 1, exclusion: null,
+		}));
+		let candidateId = "candidate-first";
+		const fixture = workbench({ decide: async () => decision("run-current", {
+			resolvedAs: "verify-candidate", outcome: "verified", screen: null, headline: candidateSummary().headline,
+			candidate: candidateSummary({ candidateId, cases: cases.slice(0, 60), casesTotal: cases.length, casesOffset: 0 }),
+			development: { verdict: "improved", scoreDelta: 1, confidence95: { low: 1, high: 1 } },
+			sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
+		}, viewAt("candidate-review")), view: async (query) => {
+			const casesOffset = query?.casesOffset ?? 0;
+			return viewAt("candidate-review", { detail: { aspect: "review", content: {
+				kind: "candidate", ...candidateSummary({ candidateId, cases: cases.slice(casesOffset, casesOffset + 60), casesTotal: cases.length, casesOffset }),
+				proposal: null, proposalError: null, adoption: null, continuation: null, impact: null,
+			} } });
+		} });
+		const { commands, output } = register(fixture.value);
+		const host = context();
+		const review = command(commands, "review");
+		await command(commands, firstCommand).handler("", host.ctx);
+		expect(output.text()).toContain("61 more cases");
+		host.select.mockClear();
+		fixture.decide.mockClear();
+		output.note.mockClear();
+		for (let page = 1; page <= 6; page++) await review.handler("next", host.ctx);
+		const printed = output.blocks.flatMap((block) => block.lines.map(stripMarkers)).flatMap((line) => line.match(/case-\d{3}/g) ?? []);
+		expect(printed).toEqual(cases.map((entry) => entry.taskId));
+		const count = output.blocks.length;
+		await review.handler("next", host.ctx);
+		expect(output.blocks).toHaveLength(count);
+		await review.handler("prev", host.ctx);
+		expect(output.blocks.at(-1)?.lines.map(stripMarkers).join("\n")).toContain("case-061");
+		candidateId = "candidate-second";
+		await review.handler("next", host.ctx);
+		expect(output.blocks.at(-1)?.lines.map(stripMarkers).join("\n")).toContain("case-001");
+		await review.handler("prev", host.ctx);
+		expect(host.select).not.toHaveBeenCalled();
+		expect(host.confirm).not.toHaveBeenCalled();
+		expect(fixture.decide).not.toHaveBeenCalled();
+		expect(output.note).not.toHaveBeenCalled();
+	});
+
+	it("does not offer a mutation when /review next finds a non-candidate", async () => {
+		const fixture = workbench({ view: async () => viewAt("proposal-review", { detail: { aspect: "review", content: proposalReview() } }) });
+		const { commands } = register(fixture.value);
+		const host = context({ select: async () => "Apply to a candidate branch" });
+		await command(commands, "review").handler("next", host.ctx);
+		expect(host.select).not.toHaveBeenCalled();
+		expect(fixture.decide).not.toHaveBeenCalled();
+	});
+
+	it("pages trace rows with absolute ordinals, preserves /traces N and resets when the selected evaluation changes", async () => {
+		const rows = Array.from({ length: 73 }, (_, index) => ({
+			runId: `run-${index + 1}`, taskId: `case-${String(index + 1).padStart(3, "0")}`, repetitionIndex: 0,
+			outcome: "fail" as const, score: 0, inputPreview: null, graders: [], failureModeIds: [], error: null, traceAvailable: false,
+			metrics: { latencyMs: 1, toolCalls: 0, reportedToolCalls: 0, toolErrors: 0, tokens: 0, costUsd: 0 },
+		}));
+		let evalRunId = "erun-first";
+		const fixture = workbench({ view: async () => {
+			const content = tracesDetail();
+			content.evaluation.evalRunId = evalRunId;
+			return viewAt("improvement-authoring", { detail: { aspect: "traces", content } });
+		} });
+		const evalPage = vi.fn((_root: string, id: string) => ({ evalRunId: id, rows, modes: [] }) as unknown as ReturnType<NonNullable<RegisterOptions["evidence"]>["evalPage"]>);
+		const sendUserMessage = vi.fn();
+		const { commands, output } = register(fixture.value, { evidence: { evalPage, runDetail: vi.fn() }, sendUserMessage });
+		const host = context();
+		const traces = command(commands, "traces");
+		await traces.handler("", host.ctx);
+		host.select.mockClear();
+		for (let page = 1; page <= 6; page++) await traces.handler("next", host.ctx);
+		const printed = output.blocks.filter((block) => block.title === "AHDE · Runs")
+			.flatMap((block) => block.lines.map(stripMarkers)).filter((line) => /case-\d/.test(line));
+		expect(printed.map((line) => Number(line.trim().split(/\s+/)[0]))).toEqual(rows.map((_, index) => index + 1));
+		await traces.handler("next", host.ctx);
+		await traces.handler("prev", host.ctx);
+		expect(output.blocks.at(-1)?.lines.map(stripMarkers).join("\n")).toMatch(/\b61\s+case-061/);
+		expect(host.select).not.toHaveBeenCalled();
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(fixture.decide).not.toHaveBeenCalled();
+		await traces.handler("30", host.ctx);
+		expect(output.blocks.at(-1)?.lines.filter((line) => /case-\d/.test(line))).toHaveLength(30);
+		await traces.handler("next", host.ctx);
+		expect(output.blocks.at(-1)?.lines.map(stripMarkers).join("\n")).toMatch(/\b31\s+case-031/);
+		evalRunId = "erun-second";
+		await traces.handler("next", host.ctx);
+		expect(evalPage).toHaveBeenLastCalledWith(fixture.value.runsRoot, "erun-second");
+		expect(output.blocks.at(-1)?.lines.map(stripMarkers).join("\n")).toMatch(/\b1\s+case-001/);
+	});
+
 	it("offers apply and discard after rendering a proposal in /review", async () => {
 		const proposalView = viewAt("proposal-review", { detail: { aspect: "review", content: proposalReview() } });
 		const fixture = workbench({ view: async () => proposalView });
@@ -1831,6 +1971,11 @@ describe("Builder Pi slash commands", () => {
 		expect(recovery.output.blocks.map((block) => block.title)).toEqual(["AHDE · Interrupted candidate", "Candidate attempt abandoned"]);
 		expect(recovery.output.text()).toContain("Verification stopped before evidence was complete.");
 
+		const cases = [
+			{ taskId: "routing", input: null, baseline: { pass: 0, total: 1, score: 0 }, candidate: { pass: 1, total: 1, score: 1 }, scoreDelta: 1, exclusion: null },
+			{ taskId: "refund", input: null, baseline: { pass: 0, total: 1, score: 0 }, candidate: { pass: 1, total: 1, score: 1 }, scoreDelta: 1, exclusion: null },
+			{ taskId: "greeting", input: null, baseline: { pass: 1, total: 1, score: 1 }, candidate: { pass: 1, total: 1, score: 1 }, scoreDelta: 0, exclusion: null },
+		];
 		const verifying = workbench({
 			view: async () => viewAt("candidate-verification"),
 			decide: async () => decision("run-current", {
@@ -1838,7 +1983,7 @@ describe("Builder Pi slash commands", () => {
 				outcome: "verified" as const,
 				headline: candidateSummary().headline,
 				screen: null,
-				candidate: candidateSummary(),
+				candidate: candidateSummary({ cases }),
 				development: { verdict: "improved", scoreDelta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
 				sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
 			}, viewAt("candidate-review")),
@@ -1858,6 +2003,11 @@ describe("Builder Pi slash commands", () => {
 		expect(verification.output.text()).toContain("Development pass rate 33% → 100% (+66.7 pts, 95% CI +10 … +90) on 3 cases");
 		expect(verification.output.text()).toContain("3 cases is a small basket: read the interval as indicative, not decisive");
 		expect(verification.output.text()).toContain("Sealed holdout gate passed");
+		// The comparison case by case, under the verdict, so nobody has to open
+		// the Explorer to learn which case moved.
+		expect(verification.output.text()).toMatch(/By case\n\s*task\s+baseline\s+candidate\s+Δ/);
+		expect(verification.output.text()).toMatch(/routing\s+0%\s+100%\s+↑ \+100 pts/);
+		expect(verification.output.text()).toMatch(/greeting\s+100%\s+100%\s+= 0 pts/);
 		expect(verificationHost.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 
 		const promoting = gatedWorkbench("candidate-review");
@@ -2150,12 +2300,14 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.view).not.toHaveBeenCalled();
 	});
 
-	it("/traces accepts only a row count, and rejects anything else before touching the host", async () => {
+	it("/traces rejects invalid paging arguments before touching the host", async () => {
 		const fixture = workbench();
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
-		await expectRefusal(commands, "traces", "unexpected", host.ctx, output, "/traces takes how many rows to show");
+		for (const argument of ["unexpected", "next 2", "-1", "1.5", "9007199254740992"]) {
+			await expectRefusal(commands, "traces", argument, host.ctx, output, "/traces takes a row count");
+		}
 		expect(host.waitForIdle).not.toHaveBeenCalled();
 		expect(fixture.view).not.toHaveBeenCalled();
 	});
@@ -2664,7 +2816,7 @@ describe("Builder Pi slash commands", () => {
 
 /**
  * The recorded dataset, from inside the Builder. The application function is
- * the one `ahde export` calls, so this pins only what the command owns: the
+ * `exportDataset`, so this pins only what the command owns: the
  * argument it accepts, and the one Russian line the operator reads.
  */
 describe("/dataset", () => {

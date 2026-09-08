@@ -154,15 +154,17 @@ describe("the runs table", () => {
 		];
 		const lines = renderRunsTable(rows, [], plainPaint);
 		expect(lines[0]).toContain("passed");
+		// `#  task  rep  passed …`: the fraction is the fourth column of a row.
 		const of = (taskId: string): string[] =>
-			lines.filter((line) => line.includes(taskId)).map((line) => line.split(/\s+/)[3] ?? "");
+			lines.filter((line) => line.includes(taskId)).map((line) => line.trim().split(/\s+/)[3] ?? "");
 		expect(of("task_a")).toEqual(["3/3", "3/3", "3/3"]);
 		expect(of("task_b")).toEqual(["2/3", "2/3", "2/3"]);
 		// The errored repetition is in the denominator and not in the numerator.
 		expect(of("task_c")).toEqual(["2/3", "2/3", "2/3"]);
 		// The fraction is counted over every row handed in, never over the page.
 		const shown = renderRunsTable(rows, [], plainPaint, { limit: 1 });
-		expect(shown[1]?.split(/\s+/)[3]).toBe("3/3");
+		// Header, rule, then the one row.
+		expect(shown[2]?.trim().split(/\s+/)[3]).toBe("3/3");
 		for (const line of lines) expect([...line].length).toBeLessThanOrEqual(110);
 	});
 });

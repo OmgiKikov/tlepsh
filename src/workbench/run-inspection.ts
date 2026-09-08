@@ -78,17 +78,8 @@ interface InspectionOptions {
 
 /** The caller supplies only the Workbench's selected, verified development eval. */
 export function inspectSelectedDevelopmentRun(options: InspectionOptions): WorkbenchRunInspection {
-	return inspectVerifiedRun(options, "evidence");
-}
-
-/** The caller has verified exact experiment/arm membership through loadModelExperimentEval. */
-export function inspectModelExperimentRun(options: InspectionOptions): WorkbenchRunInspection {
-	return inspectVerifiedRun(options, "model-experiment");
-}
-
-function inspectVerifiedRun(options: InspectionOptions, purpose: "evidence" | "model-experiment"): WorkbenchRunInspection {
 	const { evaluation, runId } = options;
-	if (evaluation.record.evidenceVisibility !== "development" || evaluation.record.purpose !== purpose ||
+	if (evaluation.record.evidenceVisibility !== "development" || evaluation.record.purpose !== "evidence" ||
 		evaluation.record.target.id !== options.targetId || !evaluation.hasRunHashes) {
 		throw new Error("Exact run inspection requires a hash-pinned development evaluation of the current Target");
 	}

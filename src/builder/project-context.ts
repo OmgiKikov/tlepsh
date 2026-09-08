@@ -1,6 +1,6 @@
 import { basename, resolve } from "node:path";
 import { inspectTargetAuthoringContext, type TargetAuthoringResource } from "../application/target-authoring-context.js";
-import { listCorpora } from "../corpus.js";
+import { listCorpora, sealedDatasetHashesFor } from "../corpus.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -14,69 +14,12 @@ import { standInFilesLine } from "../target/placeholders.js";
 import { errorMessage } from "../util.js";
 
 const MAX_STATUS_ITEMS = 30;
-const DEFAULT_COMPAT_READ_BYTES = 32 * 1024;
 
 export interface BuilderProjectContext {
 	projectDir: string;
 	stateRoot: string;
 	runsRoot: string;
 	projectId?: string;
-}
-
-/** @deprecated Use Workbench `view({ aspect: "target" })` resource metadata. */
-export interface PublicTargetFile {
-	path: string;
-	bytes: number;
-}
-
-/** @deprecated Use Workbench `view({ aspect: "target", resourcePath })`. */
-export interface PublicTargetRead extends PublicTargetFile {
-	sha256: string;
-	content: string;
-	truncated: boolean;
-}
-
-function exactAuthoringContext(projectDir: string, resourcePath?: string) {
-	const target = loadTarget(projectDir);
-	return inspectTargetAuthoringContext({
-		repositoryDir: projectDir,
-		expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
-		...(resourcePath ? { resourcePath } : {}),
-	});
-}
-
-/**
- * @deprecated Compatibility adapter over the exact-Git declared-resource seam.
- * Raw manifest, orphan, dirty, and private filesystem reads now fail closed.
- */
-export function readPublicTargetFile(
-	projectDir: string,
-	path: string,
-	maxBytes = DEFAULT_COMPAT_READ_BYTES,
-): PublicTargetRead {
-	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > DEFAULT_COMPAT_READ_BYTES) {
-		throw new Error(`maxBytes must be between 1 and ${DEFAULT_COMPAT_READ_BYTES}`);
-	}
-	const resource = exactAuthoringContext(projectDir, path).resource;
-	if (!resource) throw new Error("declared Target authoring resource was not returned");
-	const raw = Buffer.from(resource.content, "utf8");
-	const visible = raw.subarray(0, maxBytes);
-	return {
-		path: resource.path,
-		bytes: resource.bytes,
-		sha256: resource.sha256,
-		content: visible.toString("utf8"),
-		truncated: raw.length > visible.length,
-	};
-}
-
-/** @deprecated Compatibility adapter returning only declared exact-Git resources. */
-export function listPublicTargetFiles(projectDir: string): PublicTargetFile[] {
-	try {
-		return exactAuthoringContext(projectDir).resources.map(({ path, bytes }) => ({ path, bytes }));
-	} catch {
-		return [];
-	}
 }
 
 export function resolveBuilderProjectId(context: BuilderProjectContext): string {
@@ -163,8 +106,7 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 	}
 	let evals: EvalSummary[] = [];
 	try {
-		const sealedCorpora = corpora.filter((corpus) => corpus.visibility === "sealed");
-		const sealedHashes = new Set(sealedCorpora.map((corpus) => corpus.hash));
+		const sealedHashes = sealedDatasetHashesFor({ stateRoot: context.stateRoot, projectId });
 		const listed = listEvalRunIndexesLenient(context.runsRoot);
 		if (listed.invalid.length > 0) {
 			warnings.push(`evals: ${listed.invalid.length} legacy eval run index(es) ignored; not comparable with the current evidence schema`);

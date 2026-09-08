@@ -4,7 +4,7 @@ import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
 import { runGraderScore } from "../../compare.js";
 import { readRunOutcome } from "../../application/run-reading.js";
 import { renderRunReadingLines } from "./run-reading.js";
-import { duration, money, oneLine, percent, shortTaskId } from "./format.js";
+import { caseLabel, duration, money, oneLine, percent, table, TABLE_WIDTH, type TableCell, type TableColumn, type Tone } from "./format.js";
 import type { Paint } from "./paint.js";
 import { plural, t, tokenLabel } from "../../i18n.js";
 
@@ -28,11 +28,6 @@ const MAX_NOTE_CHARS = 3_800;
 const MAX_RAG_PANEL_SEARCHES = 4;
 const MAX_RAG_PANEL_HITS = 5;
 const MAX_RAG_PANEL_SOURCE_IDS = 6;
-
-function pad(text: string, width: number): string {
-	const chars = [...text];
-	return chars.length >= width ? chars.join("") : text + " ".repeat(width - chars.length);
-}
 
 function outcomeWord(outcome: RunRow["outcome"]): string {
 	return outcome === "pass" ? "pass" : outcome === "fail" ? "fail" : "error";
@@ -60,10 +55,6 @@ function wrapSentence(text: string, width = WRAP_WIDTH): string[] {
 	return lines;
 }
 
-function graderChips(graders: RunRow["graders"]): string {
-	return graders.map((grader) => `${grader.passed ? "✓" : "✗"}${oneLine(grader.name, 14)}`).join(" ");
-}
-
 /**
  * How often each case came back right, over the rows given.
  *
@@ -87,62 +78,70 @@ function repetitionsPassed(rows: readonly RunRow[]): Map<string, { pass: number;
 /**
  * The compact runs table under the diagnosis: failures first (the rows come
  * already ordered by `runsTable`), one line per case × repetition.
+ *
+ * The case is named, not hashed; the repetition columns appear only when a
+ * repetition happened; and what went wrong is one column — the failure mode
+ * when the diagnosis named one, the failed checks when it did not — because a
+ * grader chip cut to `✓jud…` told nobody anything.
  */
 export function renderRunsTable(
 	rows: readonly RunRow[],
 	modes: readonly EvalPageMode[],
 	paint: Paint,
-	options: { limit?: number } = {},
+	options: { limit?: number; offset?: number; width?: number } = {},
 ): string[] {
 	const limit = Math.max(1, Math.min(options.limit ?? DEFAULT_TRACE_TABLE_ROWS, MAX_TRACE_TABLE_ROWS));
+	const offset = Math.max(0, options.offset ?? 0);
 	if (rows.length === 0) return [paint.dim(t("table.none"))];
 	const titles = new Map(modes.map((mode) => [mode.id, mode.title]));
-	const shown = rows.slice(0, limit);
+	const shown = rows.slice(offset, offset + limit);
 	// Counted over every row handed in, not the page's own slice: a fraction
 	// whose denominator is however many rows happened to fit is not a fraction.
 	const passed = repetitionsPassed(rows);
-	// The `passed` column is paid for out of the two widest neighbours: the
-	// panel's 110 columns are the budget, and a fraction that says whether a
-	// case is reliable outweighs five more characters of grader chip.
-	const columns = { index: 3, task: 18, rep: 3, passed: 6, outcome: 7, score: 5, graders: 18, mode: 23, tools: 5 };
-	const header = [
-		pad("#", columns.index),
-		pad(t("table.col.task"), columns.task),
-		pad(t("table.col.rep"), columns.rep),
-		pad(t("table.col.every-repetition"), columns.passed),
-		pad(t("table.col.outcome"), columns.outcome),
-		pad(t("table.col.score"), columns.score),
-		pad(t("table.col.graders"), columns.graders),
-		pad(t("table.col.mode"), columns.mode),
-		pad(t("table.col.tools"), columns.tools),
-		t("table.col.latency"),
-	].join(" ");
-	const lines = [paint.dim(header)];
-	shown.forEach((row, position) => {
+	const repeated = rows.some((row) => row.repetitionIndex > 0) || [...passed.values()].some((entry) => entry.total > 1);
+	const columns: TableColumn[] = [
+		{ header: "#", align: "right" },
+		{ header: t("table.col.task"), min: 16, max: 44, flex: true },
+		...(repeated
+			? [{ header: t("table.col.rep"), align: "right" as const }, { header: t("table.col.every-repetition"), align: "right" as const }]
+			: []),
+		{ header: t("table.col.outcome") },
+		{ header: t("table.col.score"), align: "right" },
+		{ header: t("table.col.mode"), min: 14, max: 40, flex: true },
+		{ header: t("table.col.tools"), align: "right" },
+		{ header: t("table.col.latency"), align: "right" },
+	];
+	const body = shown.map((row, position): TableCell[] => {
 		const modeId = row.failureModeIds[0];
-		const mode = modeId ? titles.get(modeId) ?? modeId : "—";
-		const outcome = pad(outcomeWord(row.outcome), columns.outcome);
+		const failed = row.graders.filter((grader) => !grader.passed).map((grader) => `✗${grader.name}`).join(" ");
+		const problem = modeId ? titles.get(modeId) ?? modeId : row.error ? row.error : failed;
 		const task = passed.get(row.taskId) ?? { pass: 0, total: 0 };
-		lines.push([
-			pad(String(position + 1), columns.index),
-			pad(oneLine(shortTaskId(row.taskId), columns.task), columns.task),
-			pad(String(row.repetitionIndex), columns.rep),
-			pad(`${task.pass}/${task.total}`, columns.passed),
-			paintOutcome(row.outcome, outcome, paint),
-			pad(percent(row.score), columns.score),
-			pad(oneLine(graderChips(row.graders), columns.graders), columns.graders),
-			pad(oneLine(mode, columns.mode), columns.mode),
-			pad(row.metrics.reportedToolCalls > 0
-				? `${row.metrics.toolCalls}+${row.metrics.reportedToolCalls}r`
-				: String(row.metrics.toolCalls), columns.tools),
-			duration(row.metrics.latencyMs),
-		].join(" "));
+		const tone: Tone = row.outcome === "pass" ? "success" : row.outcome === "fail" ? "error" : "warning";
+		return [
+			{ text: String(offset + position + 1), tone: "dim" },
+			{ text: caseLabel(row.taskId, row.inputPreview) },
+			...(repeated
+				? [{ text: String(row.repetitionIndex) }, { text: `${task.pass}/${task.total}`, tone: task.pass === task.total ? "success" as const : "warning" as const }]
+				: []),
+			{ text: `${outcomeMark(row.outcome)} ${outcomeWord(row.outcome)}`, tone },
+			{ text: percent(row.score) },
+			{ text: problem.length > 0 ? problem : "—", tone: problem.length > 0 ? (row.outcome === "error" ? "warning" : undefined) : "muted" },
+			{ text: row.metrics.reportedToolCalls > 0 ? `${row.metrics.toolCalls}+${row.metrics.reportedToolCalls}r` : String(row.metrics.toolCalls) },
+			{ text: duration(row.metrics.latencyMs) },
+		];
 	});
+	const lines = table(columns, body, paint, { width: options.width ?? TABLE_WIDTH });
 	if (rows.length > shown.length) {
-		lines.push(paint.dim(t("table.more", { n: rows.length - shown.length, m: Math.min(rows.length, MAX_TRACE_TABLE_ROWS) })));
+		lines.push(paint.dim(t("table.page", { start: shown.length ? offset + 1 : 0, end: offset + shown.length, total: rows.length })));
 	}
+	if (offset > 0) lines.push(paint.dim(t("table.prev")));
+	if (rows.length > offset + shown.length) lines.push(paint.dim(t("table.more", { n: rows.length - offset - shown.length })));
 	lines.push(paint.dim(t("table.hint")));
 	return lines;
+}
+
+function outcomeMark(outcome: RunRow["outcome"]): string {
+	return outcome === "pass" ? "✓" : outcome === "fail" ? "✗" : "!";
 }
 
 function renderGrader(grader: GraderFinding, paint: Paint): string[] {

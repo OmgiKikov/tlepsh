@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCandidate, transitionCandidate } from "../src/domain/candidate.js";
+import { createCandidate, promotionGradeVerdictOf, transitionCandidate } from "../src/domain/candidate.js";
 import {
 	candidateRecordPath,
 	decideCandidatePromotion,
@@ -119,7 +119,7 @@ function writePair(
 	candidateEvalRunId: string,
 	dataset: string,
 	execution: ExecutionFingerprint,
-	design: { tasks: number; repetitions: number } = { tasks: 1, repetitions: 1 },
+	design: { tasks: number; repetitions: number; candidateFailingTasks?: number } = { tasks: 1, repetitions: 1 },
 	/** When set, every run also carries a judge grader result with this spec. */
 	judgeSpecHash?: string,
 ): void {
@@ -165,6 +165,7 @@ function writePair(
 		gitSha: string,
 		taskId = `${dataset}-task`,
 		repetitionIndex = 0,
+		passed = true,
 	): string => {
 		const record: RunRecord = {
 			schemaVersion: 1,
@@ -198,7 +199,7 @@ function writePair(
 			},
 			evalResults: {
 				graders: [
-					{ name: "fixture", type: "output_contains", passed: true, score: 1, reason: "pass" },
+					{ name: "fixture", type: "output_contains", passed, score: passed ? 1 : 0, reason: passed ? "pass" : "fail" },
 					...(judgeSpecHash
 						? [{
 							name: "fixture-judge",
@@ -211,7 +212,7 @@ function writePair(
 						}]
 						: []),
 				],
-				outcome: "pass",
+				outcome: passed ? "pass" : "fail",
 			},
 			parent: { evalRunId, candidateOf: label === "candidate" ? baselineRevision : null },
 		};
@@ -224,7 +225,9 @@ function writePair(
 		for (const [taskIndex, taskId] of taskIds.entries()) {
 			for (let repetition = 0; repetition < design.repetitions; repetition += 1) {
 				const runId = taskIndex === 0 && repetition === 0 ? `${evalRunId}-run` : `${evalRunId}-run-${taskIndex}-${repetition}`;
-				artifacts.push({ runId, sha256: writeRun(runId, evalRunId, label, gitSha, taskId, repetition) });
+				// The first N tasks fail on the candidate arm only: a base that held them every time, un-fixed.
+				const passed = !(label === "candidate" && taskIndex < (design.candidateFailingTasks ?? 0));
+				artifacts.push({ runId, sha256: writeRun(runId, evalRunId, label, gitSha, taskId, repetition, passed) });
 			}
 		}
 		return artifacts;
@@ -261,7 +264,11 @@ function writePair(
 		runArtifacts: artifacts,
 		startedAt: at,
 		finishedAt: at,
-		summary: { total: artifacts.length, pass: artifacts.length, fail: 0, error: 0, allPassRate: 1 },
+		summary: (() => {
+			const failingTasks = label === "candidate" ? (design.candidateFailingTasks ?? 0) : 0;
+			const fail = failingTasks * design.repetitions;
+			return { total: artifacts.length, pass: artifacts.length - fail, fail, error: 0, allPassRate: (design.tasks - failingTasks) / design.tasks };
+		})(),
 	});
 	writeEvalRun(runsRoot, evalRecord(baselineEvalRunId, "baseline", baselineRevision, baseArtifacts, null));
 	writeEvalRun(runsRoot, evalRecord(candidateEvalRunId, "candidate", candidateRevision, candidateArtifacts, baselineEvalRunId));
@@ -276,6 +283,8 @@ function fixture(
 		execution?: ExecutionFingerprint;
 		judgeSpecHash?: string;
 		developmentTasks?: number;
+		/** Development tasks the candidate arm fails in every repetition while the base passed them. */
+		candidateFailingTasks?: number;
 		stateRoot?: string;
 	} = {},
 	withSource = true,
@@ -294,7 +303,7 @@ function fixture(
 		network: "deny",
 		filesystem: "workspace-confined-v1",
 	});
-	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution, { tasks: overrides.developmentTasks ?? 1, repetitions: 1 }, overrides.judgeSpecHash);
+	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution, { tasks: overrides.developmentTasks ?? 1, repetitions: 1, ...(overrides.candidateFailingTasks !== undefined ? { candidateFailingTasks: overrides.candidateFailingTasks } : {}) }, overrides.judgeSpecHash);
 	if (withHoldout) {
 		writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "holdout-base", "holdout-candidate", "sealed-holdout", execution, { tasks: 15, repetitions: 2 });
 	}
@@ -929,6 +938,68 @@ describe("candidate human review", () => {
 			expect(() => decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }))
 				.toThrow(/legacy v3 gate evidence and is not promotion-grade: re-verify the candidate to record exact-comparison-gate-v4 evidence/);
 		}
+	});
+
+	it("refuses to ship a change that un-fixed a case the base passed every time, and says so for the operator", () => {
+		const repo = repository();
+		// Three development tasks, one of which the candidate now fails every time:
+		// the average is inconclusive, the sealed exam passes, the guard refuses.
+		const value = fixture(true, { ...repo, targetId: "test-target", developmentTasks: 3, candidateFailingTasks: 1 });
+		const before = loadCandidateRecord(value.runsRoot, value.candidateId);
+		const evaluated = before.events.find((event) => event.type === "evaluated");
+		if (evaluated?.type !== "evaluated") throw new Error("fixture has no evaluated event");
+		expect(promotionGradeVerdictOf(evaluated.evaluation.development.comparison)).not.toBe("regressed");
+		reviewCandidate({ ...value, recommendation: "promote", reason: "looks fine on average", now: () => at });
+		const refused = (() => {
+			try {
+				promoteReviewedCandidate({ repositoryDir: repo.dir, ...value, version: "1.3.0", reason: "ship", now: () => at });
+				return null;
+			} catch (error) {
+				return error as Error & { reason?: { code: string; params: Record<string, number>; detail: string } };
+			}
+		})();
+		expect(refused?.message).toMatch(/promotion refused: 1 of 3 development task\(s\) the base passed in every repetition now fail in every repetition \(development-task\)/);
+		expect(refused?.reason).toEqual({ code: "refusal.regression-guards-broken", params: { broken: 1, guarded: 3 }, detail: "development-task" });
+		expect(candidateStatus(loadCandidateRecord(value.runsRoot, value.candidateId))).toBe("reviewed");
+		expect(() => git(repo.dir, "rev-list", "-n", "1", "v1.3.0")).toThrow();
+	});
+
+	it("refuses recorded guard evidence that disagrees with the runs it cites", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+		const tampered = {
+			...record,
+			events: record.events.map((event) => event.type !== "evaluated" ? event : {
+				...event,
+				evaluation: {
+					...event.evaluation,
+					development: { ...event.evaluation.development, regressionGuards: { policy: "regression-guards-v1" as const, guarded: 1, broken: [] as string[] } },
+				},
+			}),
+		};
+		// A recorded suite that matches the runs promotes; one that claims what the runs do not, does not.
+		writeJsonArtifact(candidateRecordPath(value.runsRoot, value.candidateId), CandidateRecordSchema, CandidateRecordSchema.parse(tampered));
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		expect(promoteReviewedCandidate({ repositoryDir: repo.dir, ...value, version: "1.4.0", reason: "ship", now: () => at }).tag).toBe("v1.4.0");
+
+		const other = repository();
+		const second = fixture(true, { ...other, targetId: "test-target" });
+		const lying = loadCandidateRecord(second.runsRoot, second.candidateId);
+		const forged = {
+			...lying,
+			events: lying.events.map((event) => event.type !== "evaluated" ? event : {
+				...event,
+				evaluation: {
+					...event.evaluation,
+					development: { ...event.evaluation.development, regressionGuards: { policy: "regression-guards-v1" as const, guarded: 5, broken: [] as string[] } },
+				},
+			}),
+		};
+		writeJsonArtifact(candidateRecordPath(second.runsRoot, second.candidateId), CandidateRecordSchema, CandidateRecordSchema.parse(forged));
+		reviewCandidate({ ...second, recommendation: "promote", reason: "verified", now: () => at });
+		expect(() => promoteReviewedCandidate({ repositoryDir: other.dir, ...second, version: "1.4.1", reason: "ship", now: () => at }))
+			.toThrow(/regression-guard evidence does not match the recorded runs/);
 	});
 
 	it("tags only the exact reviewed candidate and preserves the user's dirty checkout", () => {

@@ -30,7 +30,7 @@ function renderIssues(model: EvalPageModel): string {
 </a></li>`).join("")}</ul>
 ${model.modes.length === 0 ? `<p class="w-note">${h(t("evidence.noModes"))}</p>` : ""}
 <p class="w-note">${h(t("workspace.issueNote"))}</p>
-${model.candidates.length ? `<div class="w-comparisons"><h3>${h(t("workspace.compare"))}</h3>${model.candidates.map((candidate) => `<a href="${h(candidate.href)}">${h(candidate.candidateId)} →</a><a class="w-secondary" href="${h(`${candidate.href}/replay`)}">${h(t("evidence.replayOpen"))} →</a>`).join("")}</div>` : ""}
+${model.candidates.length ? `<div class="w-comparisons"><h3>${h(t("workspace.compare"))}</h3>${model.candidates.map((candidate) => `<a href="${h(candidate.href)}">${h(candidate.candidateId)} →</a>`).join("")}</div>` : ""}
 </aside>`;
 }
 

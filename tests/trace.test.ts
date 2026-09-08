@@ -28,6 +28,15 @@ const SESSION = [
 ].join("\n");
 
 describe("trace parser", () => {
+	it("redacts authentication-code assignments without altering account suffixes or adding repeated markers", () => {
+		const input = `PIN: 4829; passcode='7391'; OTP=625108; card_cvc="907"; customer_pin=2516; spin: 7; card ends in 4412`;
+		const redacted = redactTraceText(input);
+		for (const value of ["4829", "7391", "625108", "907", "2516"]) expect(redacted).not.toContain(value);
+		expect(redacted).toContain("spin: 7; card ends in 4412");
+		expect(redactTraceText(redacted)).toBe(redacted);
+		expect(JSON.parse(redactTraceText('{"customer_pin":"2516","account":"4412"}')))
+			.toEqual({ customer_pin: "[REDACTED]", account: "4412" });
+	});
 	const messages = parseSessionJsonl(SESSION);
 
 	it("extracts message entries only (skips session/compaction/model_change)", () => {

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { compileBuilderPassport } from "../src/builder/passport-presentation.js";
+import { CORPUS_INVENTORY_FAULTS, damageCorpusInventory } from "./helpers/corpus-inventory.js";
 import { cleanupPaths, terminalCandidateFixture, type CycleFixture } from "./helpers/cycle-fixtures.js";
 
 let fixture: CycleFixture | undefined;
@@ -17,6 +18,20 @@ function digest(content: Buffer): string {
 }
 
 describe("Builder passport presentation", () => {
+	it.each(CORPUS_INVENTORY_FAULTS)("surfaces %s instead of silently omitting the refused dataset", async (fault) => {
+		fixture = await terminalCandidateFixture("promoted", {}, { baseline: "fail", candidate: "pass" });
+		const view = await fixture.workbench.view();
+		const restore = damageCorpusInventory(fixture, fault);
+		try {
+			await expect(compileBuilderPassport(fixture.workbench, { view, save: true }))
+				.rejects.toThrow(/Cannot determine sealed-data visibility.*Restore.*permissions/);
+			expect(existsSync(join(fixture.projectDir, "exports"))).toBe(false);
+			expect(existsSync(join(fixture.projectDir, `passport-${fixture.tag}.md`))).toBe(false);
+		} finally {
+			restore();
+		}
+	}, 60_000);
+
 	it("binds the shipped passport to a verified card and the exact saved artifact", async () => {
 		fixture = await terminalCandidateFixture(
 			"promoted",

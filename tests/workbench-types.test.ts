@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WorkbenchSubmitInputSchema, WorkbenchViewQuerySchema } from "../src/workbench/types.js";
+import { WorkbenchViewToolSchema } from "../src/builder/workbench-transport.js";
 
 const authoringContext = {
 	algorithmId: "git-manifest-context-v1" as const,
@@ -22,6 +23,17 @@ const spec = {
 };
 
 describe("Workbench canonical input contract", () => {
+	it("accepts a candidate page offset in both the canonical and actual tool schemas", () => {
+		const query = { aspect: "review", casesOffset: 60 };
+		expect(WorkbenchViewQuerySchema.parse(query)).toEqual(query);
+		expect(WorkbenchViewToolSchema.prepare(query)).toEqual(query);
+		expect(WorkbenchViewToolSchema.parameters).toHaveProperty("properties.casesOffset");
+		for (const invalid of [{ aspect: "traces", casesOffset: 1 }, { ...query, casesOffset: -1 }, { ...query, casesOffset: 0.5 }]) {
+			expect(WorkbenchViewQuerySchema.safeParse(invalid).success).toBe(false);
+			expect(() => WorkbenchViewToolSchema.prepare(invalid)).toThrow();
+		}
+	});
+
 	const proposalSource = {
 		algorithmId: "exact-eval-signals-v1" as const,
 		evalRunId: "erun-test",

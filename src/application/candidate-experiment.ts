@@ -4,9 +4,9 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { compareEvalRuns, type CompareResult } from "../compare.js";
+import { compareEvalRuns, type AllowedCompareAxis, type CompareResult } from "../compare.js";
 import { loadCorpus, type CorpusRef, type LoadedCorpus } from "../corpus.js";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget } from "../domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget, regressionGuards } from "../domain/comparison-gate.js";
 import {
 	harnessScopePaths,
 	isDefaultPiHarness,
@@ -42,9 +42,11 @@ import {
 	harnessFilesOf,
 	loadTarget,
 	type ResolvedTarget,
+	type TargetManifest,
 } from "../manifest.js";
 import {
 	axisDifferences,
+	canonicalJson,
 	executionFingerprint,
 	commandProtocolFingerprint,
 	hashValue,
@@ -52,7 +54,7 @@ import {
 	provenanceAxes,
 	type ProvenanceAxes,
 } from "../provenance.js";
-import { writeJsonArtifact } from "../storage/artifacts.js";
+import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { buildExecutionPolicy } from "../execution-policy.js";
 import { createTargetToolRuntime, effectiveTargetSandbox, targetFilesystemConfinement } from "../target/runtime.js";
@@ -63,6 +65,7 @@ import {
 	targetEvalSurface,
 	targetWithDevelopmentCorpus,
 	targetWithSealedCorpus,
+	targetWithSimulatedUser,
 } from "./corpus-target.js";
 import {
 	assertManifestChangePolicy,
@@ -125,6 +128,16 @@ export interface CandidateExperimentOptions {
 		suiteHash: string;
 	};
 	sealedCorpus?: CorpusRef;
+	/**
+	 * Run the second development arm with another model playing the user, so
+	 * the measured band is the simulator's noise rather than the agent's.
+	 *
+	 * Legal only in `aa-calibration`: both arms are one revision, the pair can
+	 * never become promotion evidence, and the comparison is told to expect the
+	 * one axis it moves. The sealed arm never takes part — a holdout measures
+	 * generalization under the instrument the operator ships with.
+	 */
+	simulatorNoise?: { model: NonNullable<TargetManifest["evalSuite"]["simulatedUser"]> };
 	/** Host-only live events for the development pair. Sealed holdout runs never receive it. */
 	onRunEvent?: RunEventListener;
 	/** Host-owned cancellation propagated through development and sealed executions. */
@@ -135,6 +148,13 @@ export interface CandidateExperimentOptions {
 	baselineMaxAgeMs?: number;
 	/** Host-pinned development baseline; never forwarded to the sealed arm. */
 	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
+	/**
+	 * Cite the development pair of an earlier check of the same two revisions
+	 * on the same corpus instead of measuring it again. The sealed arm runs;
+	 * the development runs are re-read and re-compared from disk, and evidence
+	 * that no longer matches the check's record refuses.
+	 */
+	developmentEvidenceFrom?: { candidateId: string; expectedHash: string };
 }
 
 export interface CandidateExperimentHoldoutResult {
@@ -408,6 +428,21 @@ function designHash(
 		...(sealedCorpus
 			? { sealedCorpus: { id: sealedCorpus.metadata.id, hash: sealedCorpus.metadata.hash } }
 			: {}),
+		...(options.developmentEvidenceFrom
+			? { developmentEvidenceFrom: options.developmentEvidenceFrom.candidateId }
+			: {}),
+		// Which user model the second arm played with is part of what this
+		// experiment was: two A/A runs of one revision are not the same design
+		// when one of them deliberately swapped the simulator. Emitted only when
+		// asked for, so every design hash minted before stays what it was.
+		...(options.simulatorNoise
+			? {
+				simulatorNoise: {
+					provider: options.simulatorNoise.model.provider,
+					id: options.simulatorNoise.model.id,
+				},
+			}
+			: {}),
 	});
 }
 
@@ -557,6 +592,65 @@ interface MatchedEvaluationExecution {
 	baselineMaxAgeMs?: number;
 	/** Host-pinned development baseline; never forwarded to the sealed arm. */
 	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
+	/** Axes this design moves on purpose; the comparison expects them. */
+	allowAxes?: readonly AllowedCompareAxis[];
+}
+
+/**
+ * The development pair of an earlier check, re-read from disk and compared
+ * again, so the exam candidate carries the very development evidence the
+ * operator already read — never a second measurement that could disagree
+ * with it. Anything that does not match the check's record refuses.
+ */
+function citeDevelopmentEvidence(
+	dependencies: CandidateExperimentDependencies,
+	runsRoot: string,
+	citation: NonNullable<CandidateExperimentOptions["developmentEvidenceFrom"]>,
+	worktrees: ExperimentWorktreePair,
+	mode: ExperimentMode,
+	developmentCorpus: LoadedCorpus | null,
+): MatchedEvaluationResult {
+	const path = resolveContainedArtifactPath(runsRoot, "candidates", citation.candidateId, "candidate.json");
+	const source = readJsonArtifact(path, CandidateRecordSchema);
+	if (hashValue(source) !== citation.expectedHash) {
+		throw new Error(`checked candidate ${citation.candidateId} changed since it was read`);
+	}
+	const evaluated = source.events.find((event) => event.type === "evaluated");
+	if (candidateStatus(source) !== "evaluated" || evaluated?.type !== "evaluated") {
+		throw new Error(`checked candidate ${citation.candidateId} has no development evidence to cite`);
+	}
+	const { evaluation } = evaluated;
+	if (evaluation.sealedHoldout) throw new Error(`candidate ${citation.candidateId} already carries sealed evidence`);
+	if (evaluation.mode !== mode) throw new Error(`checked candidate ${citation.candidateId} was measured in ${evaluation.mode} mode`);
+	const { development } = evaluation;
+	if (development.baseline.harness.sha !== worktrees.baseline.sha || development.candidate.harness.sha !== worktrees.candidate.sha) {
+		throw new Error(`checked candidate ${citation.candidateId} measured other revisions than this exam`);
+	}
+	const corpus = developmentCorpus ? { id: developmentCorpus.metadata.id, hash: developmentCorpus.metadata.hash } : null;
+	if (canonicalJson(development.corpus ?? null) !== canonicalJson(corpus)) {
+		throw new Error(`checked candidate ${citation.candidateId} measured another development corpus`);
+	}
+	if (!development.comparison || !("comparisonHash" in development.comparison)) {
+		throw new Error(`checked candidate ${citation.candidateId} carries legacy comparison evidence; check it again`);
+	}
+	for (const evalRunId of [development.baseline.evalRunId, development.candidate.evalRunId]) {
+		const index = readEvalRunIndex(runsRoot, evalRunId);
+		if (index.evidenceVisibility !== "development" || index.purpose !== "evidence") {
+			throw new Error(`eval run ${evalRunId} of the check is not development evidence`);
+		}
+	}
+	const baseline = loadVerifiedEvalRun(runsRoot, development.baseline.evalRunId).record;
+	const candidate = loadVerifiedEvalRun(runsRoot, development.candidate.evalRunId).record;
+	if (candidate.baselineEvalRunId !== baseline.evalRunId) {
+		throw new Error("the check's candidate eval is not linked to its recorded baseline");
+	}
+	const compare = dependencies.compareEvalRuns(runsRoot, baseline.evalRunId, candidate.evalRunId, { mode, surface: "development" });
+	if (!comparisonUsable(compare)) throw new Error(compare.error ?? `${compare.status} development comparison of the check`);
+	const recomputed = comparisonGateEvidence(compare, corpus ? { corpusId: corpus.id, corpusHash: corpus.hash } : {});
+	if (!("comparisonHash" in recomputed) || recomputed.comparisonHash !== development.comparison.comparisonHash) {
+		throw new Error(`development evidence of candidate ${citation.candidateId} no longer matches its recorded runs`);
+	}
+	return { baseline, candidate, compare, baselineReused: true };
 }
 
 async function runMatchedEvaluation(
@@ -631,6 +725,7 @@ async function runMatchedEvaluation(
 	const compare = dependencies.compareEvalRuns(runsRoot, baseline.evalRunId, candidate.evalRunId, {
 		mode,
 		surface: evidenceVisibility,
+		...(execution.allowAxes ? { allowAxes: execution.allowAxes } : {}),
 	});
 	if (!comparisonUsable(compare)) {
 		throw new Error(compare.error ?? `${compare.status} candidate comparison`);
@@ -668,6 +763,12 @@ export async function runCandidateExperiment(
 		throw new Error(
 			`development evaluation requires a development corpus, got ${developmentCorpus.metadata.visibility} (${developmentCorpus.metadata.id})`,
 		);
+	}
+	if (options.simulatorNoise && options.mode !== "aa-calibration") {
+		throw new Error("simulator noise is an A/A design and is never candidate evidence");
+	}
+	if (options.simulatorNoise && options.sealedCorpus) {
+		throw new Error("simulator noise measures the development pair only; a sealed holdout cannot run a second user model");
 	}
 	const sealedCorpus = options.sealedCorpus ? deps.loadCorpus(options.sealedCorpus) : null;
 	if (sealedCorpus && sealedCorpus.metadata.visibility !== "sealed") {
@@ -714,9 +815,16 @@ export async function runCandidateExperiment(
 			const baselineTarget = developmentCorpus
 				? targetWithDevelopmentCorpus(resolvedBaselineTarget, developmentCorpus)
 				: resolvedBaselineTarget;
-			const candidateTarget = developmentCorpus
+			const composedCandidateTarget = developmentCorpus
 				? targetWithDevelopmentCorpus(resolvedCandidateTarget, developmentCorpus)
 				: resolvedCandidateTarget;
+			// The one deliberate asymmetry in the whole service: the second arm may
+			// play the user with another model. Applied after the corpus so the
+			// cases, the dataset hash and the suite hash stay the baseline's, which
+			// is what makes the user model the only axis that moved.
+			const candidateTarget = options.simulatorNoise
+				? targetWithSimulatedUser(composedCandidateTarget, options.simulatorNoise.model)
+				: composedCandidateTarget;
 			assertExpectedDevelopmentSource(baselineTarget, options.expectedDevelopmentSource);
 			assertExpectedDevelopmentSource(candidateTarget, options.expectedDevelopmentSource);
 			const holdoutBaselineTarget = sealedCorpus
@@ -799,23 +907,28 @@ export async function runCandidateExperiment(
 			);
 			let phase: "development" | "sealed" = "development";
 			try {
-				const development = await runMatchedEvaluation(
-					deps,
-					runsRoot,
-					baselineTarget,
-					candidateTarget,
-					worktrees.baseline.sha,
-					options.mode,
-					options.repetitions,
-					"development",
-					{
-						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-						...(options.signal ? { signal: options.signal } : {}),
-						...(options.jobs === undefined ? {} : { jobs: options.jobs }),
-						...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
-						...(options.pinnedDevelopmentBaseline ? { pinnedDevelopmentBaseline: options.pinnedDevelopmentBaseline } : {}),
-					},
-				);
+				const development = options.developmentEvidenceFrom
+					? citeDevelopmentEvidence(deps, runsRoot, options.developmentEvidenceFrom, worktrees, options.mode, developmentCorpus)
+					: await runMatchedEvaluation(
+						deps,
+						runsRoot,
+						baselineTarget,
+						candidateTarget,
+						worktrees.baseline.sha,
+						options.mode,
+						options.repetitions,
+						"development",
+						{
+							...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+							...(options.signal ? { signal: options.signal } : {}),
+							...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+							...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+							...(options.pinnedDevelopmentBaseline ? { pinnedDevelopmentBaseline: options.pinnedDevelopmentBaseline } : {}),
+							// The user model is the measurement here, so the pair is
+							// expected to differ on exactly that axis and on no other.
+							...(options.simulatorNoise ? { allowAxes: ["simulatedUser"] as const } : {}),
+						},
+					);
 
 				let sealedHoldout: CandidateExperimentHoldoutResult | null = null;
 				if (sealedCorpus && holdoutBaselineTarget && holdoutCandidateTarget) {
@@ -880,6 +993,10 @@ export async function runCandidateExperiment(
 									}
 									: {},
 							),
+							// The regression suite of this pair: read off the same rows the
+							// gate decided on, at the repetitions those runs had (a cited
+							// check keeps its own), recomputed and re-checked at promotion.
+							regressionGuards: regressionGuards(development.compare.rows, development.baseline.repetitions),
 						},
 						...(sealedHoldout
 							? {

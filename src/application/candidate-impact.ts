@@ -353,6 +353,7 @@ function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCatego
 		case "required-tool": return "tool-selection";
 		case "output-contains":
 		case "output-matches":
+		case "output-excludes":
 		case "no-secret":
 		case "turn-budget":
 		case "world-state":

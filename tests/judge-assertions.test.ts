@@ -225,7 +225,7 @@ describe("assertion rubrics", () => {
 
 /**
  * The prompt builders now read one derived subject instead of the task and the
- * grader directly, so `ahde label` can put the same object in front of a human.
+ * grader directly, so `/label` can put the same object in front of a human.
  * These four strings are the whole grading contract: if a refactor moves one
  * byte, evidence graded before it becomes incomparable with evidence after.
  */

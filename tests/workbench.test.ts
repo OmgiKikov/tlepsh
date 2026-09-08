@@ -1,4 +1,5 @@
 import { workbenchNext, workbenchGuidanceContext } from "../src/workbench/next-actions.js";
+import { typedRefusalReason } from "../src/workbench/errors.js";
 import { nextStep } from "../src/builder/render/stage.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,10 +42,6 @@ import {
 } from "../src/provenance.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
-import {
-	createBuilderWorkbench,
-	type BuilderWorkbenchDependencies,
-} from "../src/builder/workbench-adapter.js";
 import {
 	WorkbenchDecisionDeclinedError,
 	WorkbenchDecisionInputSchema,
@@ -728,7 +725,7 @@ describe("AHDE Workbench", () => {
 			.not.toContain(workshopId);
 	}, 120_000);
 
-	it("builds a pinned network container from an approved Spec before the first eval", async () => {
+	it("builds the network policy an approved Spec calls for before the first eval", async () => {
 		const paths = target();
 		const workbench = createAhdeWorkbench({
 			...paths,
@@ -738,7 +735,7 @@ describe("AHDE Workbench", () => {
 		const constructionSpec: AgentSpec = {
 			...spec("Public research assistant"),
 			allowedActions: ["Retrieve public web evidence"],
-			constraints: ["Run network tools only in the reviewed pinned container"],
+			constraints: ["Run network tools only under the reviewed sandbox"],
 		};
 		await workbench.submit({ kind: "spec-draft", spec: constructionSpec });
 		const approved = await workbench.decide({
@@ -757,33 +754,20 @@ describe("AHDE Workbench", () => {
 				gitSha: loadTarget(paths.projectDir).gitSha,
 			},
 		});
-		const digest = "d".repeat(64);
 		const submitted = await workbench.submit({
 			kind: "structured-proposal",
 			authoringContext: authoring.claim,
 			approvedSpecId: approved.result.approvedSpecId,
-			summary: "Construct the Spec-required pinned network runtime",
+			summary: "Construct the Spec-required network authority",
 			intents: [{
 				type: "execution.configure",
 				execution: {
 					network: "allow",
 					sandbox: "required",
-					container: {
-						action: "replace",
-						value: {
-							runtime: "docker",
-							image: `ahde/research@sha256:${digest}`,
-							platform: "linux/amd64",
-							memoryMb: 1024,
-							cpus: 1,
-							pidsLimit: 96,
-							readOnlyRootfs: true,
-						},
-					},
 				},
 			}],
-			risks: ["The pinned image must be available on the selected runtime"],
-			validationPlan: ["Run the reviewed development basket in the exact container"],
+			risks: ["Network access widens what a case can reach"],
+			validationPlan: ["Run the reviewed development basket under the exact policy"],
 		});
 		expect(submitted).toMatchObject({
 			artifact: {
@@ -809,72 +793,24 @@ describe("AHDE Workbench", () => {
 			runId,
 			evidenceBasis: null,
 		});
-		expect(JSON.stringify(review.detail?.content)).toContain(`ahde/research@sha256:${digest}`);
+		expect(JSON.stringify(review.detail?.content)).toContain("network: allow");
 
 		const applied = await workbench.decide({
 			kind: "apply-proposal",
 			runId,
-			branch: "candidate/spec-container",
+			branch: "candidate/spec-network",
 			reason: "Apply the exact reviewed construction diff",
 		}, gate());
 		expect(applied.view.stage).toBe("candidate-verification");
 		const candidateManifest = parseYaml(execFileSync(
 			"git",
-			["-C", paths.projectDir, "show", "candidate/spec-container:manifest.yaml"],
+			["-C", paths.projectDir, "show", "candidate/spec-network:manifest.yaml"],
 			{ encoding: "utf8" },
 		)) as { execution: Record<string, unknown> };
 		expect(candidateManifest.execution).toMatchObject({
 			network: "allow",
 			sandbox: "required",
-			container: {
-				runtime: "docker",
-				image: `ahde/research@sha256:${digest}`,
-				platform: "linux/amd64",
-				memoryMb: 1024,
-				cpus: 1,
-				pidsLimit: 96,
-				readOnlyRootfs: true,
-			},
 		});
-	});
-
-	it("forwards an injected improvement compiler into Builder Workbench /traces", async () => {
-		const paths = target();
-		const setup = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
-		await setup.submit({ kind: "spec-draft", spec: spec() });
-		await setup.decide({ kind: "approve-spec", reason: "Approve exact trace fixture" }, gate());
-		await setup.submit({
-			kind: "corpus-draft",
-			name: "Trace fixture",
-			tasks: [task()],
-			coverageNotes: [],
-			revisionSummary: "Trace fixture",
-		});
-		const published = await setup.decide({ kind: "publish-corpus", reason: "Publish trace fixture" }, gate());
-		const evaluation = writeDevelopmentEval(paths, String(published.result.corpusId), "erun_adapter_compiler");
-		const injectedHeadline = "Injected Builder Workbench compiler was used.";
-		const injectedCompiler: typeof compileImprovementBrief = vi.fn((runsRoot, diagnosis) => ({
-			...compileImprovementBrief(runsRoot, diagnosis),
-			headline: injectedHeadline,
-		}));
-		const workbench = createBuilderWorkbench(
-			{ ...paths, projectId: "test-target" },
-			{
-				diagnoseEval: diagnoseEvalRun,
-				compileImprovementBrief: injectedCompiler,
-				evidenceLink: () => null,
-			} as unknown as BuilderWorkbenchDependencies,
-		);
-
-		const traces = await workbench.view({ aspect: "traces" });
-
-		expect(injectedCompiler).toHaveBeenCalledOnce();
-		expect(injectedCompiler).toHaveBeenCalledWith(
-			paths.runsRoot,
-			expect.objectContaining({ evalRunId: evaluation.evalRunId }),
-		);
-		expect((traces.detail?.content as { improvementBrief: { headline: string } }).improvementBrief.headline)
-			.toBe(injectedHeadline);
 	});
 
 	it("imports, regrades, publishes, derives a regression from verified failure evidence, and restores it after restart", async () => {
@@ -982,9 +918,10 @@ describe("AHDE Workbench", () => {
 		expect((tracesView.detail?.content as {
 			improvementBrief: { briefId: string };
 		}).improvementBrief.briefId).toBe(measuredBrief.briefId);
-		const regressionTask: { input: string; graders: GraderSpec[] } = {
+		const regressionTask: { input: string; expected?: string; graders: GraderSpec[] } = {
 			input: "Does the refund window still apply after an account migration?",
-			graders: [{ type: "output_contains", text: "30 days", caseSensitive: false }],
+			expected: "30 days",
+			graders: [{ type: "exact", normalize: "lower" }],
 		};
 		const revision = (sourceEvalRunId: string, runId: string, derivedTask = regressionTask) => ({
 			kind: "corpus-revision" as const,
@@ -1064,7 +1001,7 @@ describe("AHDE Workbench", () => {
 					tasks: [
 						{ input: "What is the refund window?" },
 						{ input: "What should happen when no policy exists?" },
-						{ input: "Does the refund window still apply after an account migration?" },
+						regressionTask,
 					],
 					taskProvenance: [{
 						kind: "development-failure",
@@ -2293,6 +2230,44 @@ describe("AHDE Workbench", () => {
 		const early = createAhdeWorkbench({ ...target(), projectId: "test-target", dependencies: { now: () => NOW } });
 		await expect(early.decide({ kind: "calibrate", repetitions: 3, reason: "Too early" }, gate()))
 			.rejects.toThrow(/calibrate is not legal during spec-design/);
+	});
+
+	it("refuses a fresh improvement workshop at the door when the diagnosis names nothing proposable", async () => {
+		const paths = target();
+		const workbench = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await workbench.submit({ kind: "spec-draft", spec: spec() });
+		await workbench.decide({ kind: "approve-spec", reason: "Approve" }, gate());
+		await workbench.submit({ kind: "corpus-draft", name: "Basket", tasks: [task()], coverageNotes: [], revisionSummary: "A" });
+		const published = await workbench.decide({ kind: "publish-corpus", reason: "Publish" }, gate());
+		// Everything passed: the stage still reads "diagnosis". A view never
+		// mints one, so an undiagnosed run says nothing about proposability yet.
+		writeDevelopmentEval(paths, String(published.result.corpusId), "erun_all_pass", "pass");
+		const undiagnosed = await workbench.view();
+		expect(undiagnosed.stage).toBe("improvement-authoring");
+		expect(undiagnosed.diagnosis).toBeUndefined();
+		// The door diagnoses for itself and refuses with the sentence the close
+		// used to give, typed for the operator's language.
+		const refused = await workbench.submit({ kind: "workshop-open" }).catch((error: unknown) => error);
+		expect(refused).toBeInstanceOf(Error);
+		expect((refused as Error).message).toMatch(/not eligible for a harness proposal/);
+		expect(typedRefusalReason(refused)).toEqual({ code: "refusal.brief-not-proposable" });
+		const clean = await workbench.view();
+		expect(clean.workshop).toBeUndefined();
+		expect(clean.diagnosis).toEqual({ evalRunId: "erun_all_pass", proposable: false, obstacle: "nothing-failed", judgeAbstained: 0 });
+		expect(workbenchNext(clean).submit.map((entry) => entry.kind)).not.toContain("workshop-open");
+		expect(clean.guidance?.operatorNext).toEqual({ code: "next.nothing-failed" });
+
+		// A failing run reproduces its family every time: proposable, and the door opens as before.
+		const failing = writeDevelopmentEval(paths, String(published.result.corpusId), "erun_fail", "fail");
+		diagnoseEvalRun(paths.runsRoot, failing.evalRunId);
+		await workbench.submit({ kind: "select", entity: "eval-run", id: failing.evalRunId });
+		const actionable = await workbench.view();
+		expect(actionable.diagnosis).toMatchObject({ evalRunId: "erun_fail", proposable: true, obstacle: null });
+		expect(workbenchNext(actionable).submit.map((entry) => entry.kind)).toContain("workshop-open");
+		expect(actionable.guidance?.operatorNext).toEqual({ code: "next.improvement-authoring" });
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		expect(opened.kind).toBe("workshop-open");
+		expect((await workbench.view()).workshop).toMatchObject({ state: "live", basis: "improvement" });
 	});
 
 	it("detects a tampered mutable focus checkpoint and refuses to treat it as authority", async () => {

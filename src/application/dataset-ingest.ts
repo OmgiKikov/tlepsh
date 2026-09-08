@@ -148,6 +148,8 @@ export const DatasetMappingRecipeSchema = z.strictObject({
 	simulatedUser: z.strictObject({
 		goalColumn: ColumnNameSchema,
 		personaColumn: ColumnNameSchema.optional(),
+		knownFactsColumn: ColumnNameSchema.optional()
+			.describe("Column containing only facts known to the user at the start, not backend state, a reference answer or grading criteria. Blank cells omit knownFacts."),
 		maxTurns: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS).default(DEFAULT_RECIPE_SIMULATED_USER_TURNS),
 		stopWhen: z.string().min(1).max(MAX_TASK_TEXT_BYTES).optional(),
 	}).optional(),
@@ -300,6 +302,7 @@ function graderTexts(grader: GraderSpec): string[] {
 			if (grader.argsContains !== undefined) texts.push(grader.argsContains);
 			break;
 		case "output_contains":
+		case "output_excludes":
 			texts.push(grader.text);
 			break;
 		case "output_matches":
@@ -328,6 +331,7 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 				...(grader.argsContains !== undefined ? { argsContains: substituted(grader.argsContains) } : {}),
 			};
 		case "output_contains":
+		case "output_excludes":
 			return { ...grader, ...named, text: substituted(grader.text) };
 		case "output_matches":
 			return { ...grader, ...named, pattern: substituted(grader.pattern) };
@@ -368,6 +372,7 @@ function recipeColumnIssues(recipe: DatasetMappingRecipe, columns: readonly stri
 	if (recipe.simulatedUser) {
 		require(recipe.simulatedUser.goalColumn);
 		if (recipe.simulatedUser.personaColumn) require(recipe.simulatedUser.personaColumn);
+		if (recipe.simulatedUser.knownFactsColumn) require(recipe.simulatedUser.knownFactsColumn);
 	}
 	for (const column of recipe.metadata ?? []) require(column);
 	for (const filter of recipe.filters ?? []) require(filter.column);
@@ -659,11 +664,18 @@ function mapRow(
 		if (Buffer.byteLength(persona, "utf8") > MAX_TASK_TEXT_BYTES) {
 			return { reason: `the simulated user persona exceeds ${MAX_TASK_TEXT_BYTES} bytes` };
 		}
+		const knownFacts = recipe.simulatedUser.knownFactsColumn
+			? (row.cells[recipe.simulatedUser.knownFactsColumn] ?? "").trim()
+			: "";
+		if (Buffer.byteLength(knownFacts, "utf8") > MAX_TASK_TEXT_BYTES) {
+			return { reason: `the simulated user known facts exceed ${MAX_TASK_TEXT_BYTES} bytes` };
+		}
 		simulatedUser = {
 			goal,
 			// A blank persona cell is no persona, not an empty one: canonical JSON
 			// drops the key and the case hashes as the neutral user it is.
 			...(persona.length > 0 ? { persona } : {}),
+			...(knownFacts.length > 0 ? { knownFacts } : {}),
 			maxTurns: recipe.simulatedUser.maxTurns,
 			...(recipe.simulatedUser.stopWhen ? { stopWhen: recipe.simulatedUser.stopWhen } : {}),
 		};

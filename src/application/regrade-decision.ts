@@ -158,6 +158,7 @@ function describeGrader(spec: GraderSpec): string {
 		switch (spec.type) {
 			case "tool_called": return spec.tool;
 			case "output_contains": return spec.text;
+			case "output_excludes": return `not ${spec.text}`;
 			case "output_matches": return `/${spec.pattern}/`;
 			case "judge": return spec.assertions ? spec.assertions.join(" · ") : spec.rubric ?? "";
 			case "no_secret": return "redaction";

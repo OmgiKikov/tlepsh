@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	assertRestrictedGate,
@@ -7,7 +5,6 @@ import {
 	RESTRICTED_DECISIONS,
 	RestrictedGateDecisionError,
 	UnrestrictedGateError,
-	unattendedGate,
 	type GateRestriction,
 	type GateRestrictionId,
 } from "../src/application/restricted-gate.js";
@@ -22,8 +19,6 @@ import {
 } from "../src/application/proposal-search.js";
 import { setLanguage } from "../src/i18n.js";
 import type { WorkbenchConfirmationKind, WorkbenchHumanGate } from "../src/workbench/types.js";
-
-const CLI_SOURCE = readFileSync(fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "utf8");
 
 function recordingGate(): WorkbenchHumanGate & { confirm: ReturnType<typeof vi.fn>; selectSealed: ReturnType<typeof vi.fn> } {
 	return {
@@ -170,15 +165,7 @@ describe("one restricted gate", () => {
 	});
 });
 
-describe("the gate a run nobody is watching stands on", () => {
-	it("refuses every question instead of answering yes for the absent human", async () => {
-		const gate = unattendedGate();
-		await expect(gate.confirm(confirmation("run-eval"))).resolves.toEqual({ approved: false });
-		await expect(gate.selectSealed({ title: "pick", options: [] })).resolves.toEqual({ approved: false });
-	});
-});
-
-describe("the `ahde improve` front door", () => {
+describe("the improvement-loop front door", () => {
 	it("refuses to start when it was handed a gate that could still approve a release", async () => {
 		const raw = recordingGate();
 		// Nothing is read, resolved or spent: the refusal comes before the first
@@ -196,18 +183,5 @@ describe("the `ahde improve` front door", () => {
 			gate: raw,
 		})).rejects.toThrow(UnrestrictedGateError);
 		expect(raw.confirm).not.toHaveBeenCalled();
-	});
-
-	it("hands the loop and the search a restricted gate from the CLI too", () => {
-		// `ahde improve` used to call the loop with no gate at all while the
-		// Workbench wrapped one, so invariant 6 was enforced on one of the two
-		// front doors. Read the source: this is the wiring, not a behaviour.
-		const call = (name: string): string => {
-			const start = CLI_SOURCE.indexOf(`await ${name}({`);
-			expect(start, name).toBeGreaterThan(-1);
-			return CLI_SOURCE.slice(start, CLI_SOURCE.indexOf("\n\t\t\t});", start));
-		};
-		expect(call("runImprovementLoop")).toContain("gate: improvementLoopGate(unattendedGate())");
-		expect(call("runProposalSearch")).toContain("gate: proposalSearchGate(unattendedGate())");
 	});
 });

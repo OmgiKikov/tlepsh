@@ -52,6 +52,8 @@ export interface RunAppliedBuilderCandidateOptions {
 	baselineMaxAgeMs?: number;
 	/** Exact original validation baseline for bounded automatic selection. */
 	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
+	/** The check whose development pair this exam cites instead of measuring again. */
+	developmentEvidenceFrom?: { candidateId: string; expectedHash: string };
 }
 
 /**
@@ -321,5 +323,6 @@ export async function runAppliedBuilderCandidate(
 		...(options.jobs === undefined ? {} : { jobs: options.jobs }),
 		...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
 		...(options.pinnedDevelopmentBaseline ? { pinnedDevelopmentBaseline: options.pinnedDevelopmentBaseline } : {}),
+		...(options.developmentEvidenceFrom ? { developmentEvidenceFrom: options.developmentEvidenceFrom } : {}),
 	});
 }

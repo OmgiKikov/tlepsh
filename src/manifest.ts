@@ -8,11 +8,6 @@ import { z } from "zod";
 import { DEFAULT_PI_HARNESS_FILES, withinDeclaredHarness } from "./domain/harness-surface.js";
 import { plural } from "./i18n.js";
 import { canonicalJson, hashValue } from "./provenance.js";
-import {
-	CONTAINER_IMAGE_REFERENCE,
-	CONTAINER_PLATFORM_REFERENCE,
-	isPinnedContainerImage,
-} from "./target/container-backend.js";
 import { isStandInModel } from "./target/placeholders.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
 import {
@@ -24,9 +19,8 @@ import {
 // ---------- Grader specs (declarative, target-owned) ----------
 
 /**
- * Hard ceiling on a simulated conversation. Twelve turns is already a long
- * support dialogue; beyond it a case is measuring the user model, not the
- * agent, and the bound also caps what one Run can spend.
+ * Hard ceiling on a simulated conversation, bounding runtime and evaluator
+ * spend. This is an operational limit, not a claim about realistic dialogue.
  */
 export const MAX_SIMULATED_USER_TURNS = 12;
 
@@ -48,6 +42,19 @@ export const OutputMatchesGrader = z.strictObject({
 	type: z.literal("output_matches"),
 	name: z.string().optional(),
 	pattern: z.string(),
+});
+
+/**
+ * The must-not check: the answer passes when it does NOT contain the text.
+ * This is how a trap is scored — the plausible wrong rule, the invented
+ * refund window, the number the source never states — beside the
+ * `output_contains` that names the right one.
+ */
+export const OutputExcludesGrader = z.strictObject({
+	type: z.literal("output_excludes"),
+	name: z.string().optional(),
+	text: z.string().min(1),
+	caseSensitive: z.boolean().default(false),
 });
 
 /**
@@ -222,10 +229,21 @@ export const CitesSourceGrader = z.strictObject({
 	minOverlap: z.number().gt(0).lte(1).default(0.35).describe("Deprecated compatibility field, ignored by evaluator v5; explicit citation is required."),
 });
 
+/**
+ * A check computed from the transcript, the answer or the world — every grader
+ * but the judge. It is what a case must carry to be scored on more than an
+ * opinion: a sealed exam nobody reads and a simulated conversation both refuse
+ * a judge-only case.
+ */
+export function isDeterministicGrader(grader: { type: string }): boolean {
+	return grader.type !== "judge";
+}
+
 export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
 	OutputMatchesGrader,
+	OutputExcludesGrader,
 	NoSecretGrader,
 	JudgeGrader,
 	ExactGrader,
@@ -289,23 +307,97 @@ export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
 /**
  * A second model that plays the human across the conversation.
  *
- * `messages` freezes a past dialogue and grades the next reply; this instead
- * lets the dialogue happen, which is the only way to measure an agent that has
- * to ask a clarifying question, recover from a vague answer, or refuse politely
- * over several turns. The user model receives exactly `goal`, `persona`,
- * `stopWhen` and the transcript so far — never the graders, the reference
- * answer, or anything about the Target's harness beyond its replies.
+ * `messages` fixes a dialogue history and grades the next reply; this instead
+ * generates later user turns in response to the agent. The user model receives
+ * `goal`, `persona`, `knownFacts`, `stopWhen`, turn bounds and the visible
+ * transcript, never graders, reference answers or hidden tool/world state.
+ * Model-generated behaviour is not evidence of representative human behaviour.
  */
+/**
+ * How hard a case is, by what the agent has to do to pass it. `clarify` is the
+ * case whose request is ambiguous on purpose: the point is the question the
+ * agent asks back. `policy-trap` offers a plausible wrong rule; `out-of-scope`
+ * must be declined or redirected; `no-answer` has no answer in the source and
+ * the agent must say so instead of inventing one.
+ */
+export const CaseDifficultySchema = z.enum(["direct", "clarify", "tool", "policy-trap", "out-of-scope", "no-answer"]);
+export type CaseDifficulty = z.infer<typeof CaseDifficultySchema>;
+
+/**
+ * Host-owned presets for how the simulated person behaves. Each expands into
+ * prompt rules the host writes; the model never invents a behaviour of its own.
+ */
+export const SimulatedUserBehaviorSchema = z.enum([
+	"clear", "vague", "impatient", "wrong-facts", "changes-goal", "multi-issue", "terse", "non-native",
+]);
+export type SimulatedUserBehavior = z.infer<typeof SimulatedUserBehaviorSchema>;
+
+/** Which cell of the basket a case fills: the Spec's job, the difficulty, and optionally the user's behaviour and the world's state. */
+export const CaseCoverageSchema = z.strictObject({
+	job: z.string().trim().min(1).max(200).describe("One job from the approved Spec, verbatim."),
+	difficulty: CaseDifficultySchema,
+	behavior: SimulatedUserBehaviorSchema.optional().describe("The user's behaviour this case exercises; the simulator preset when the case is simulated."),
+	state: z.string().trim().min(1).max(64).optional().describe("A short label of the world state the case starts in, e.g. “account blocked”."),
+});
+export type CaseCoverage = z.infer<typeof CaseCoverageSchema>;
+
+const SourceHashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/, "expected a sha256 digest");
+const SourceRelativePathSchema = z.string().min(1).max(500)
+	.refine((value) => !value.startsWith("/") && !value.split("/").includes("..") && !value.split("/").includes("."), "source path is relative and never traverses");
+
+/**
+ * Where a case came from. The model-facing kinds (`kb`, `spec`, `import`,
+ * `feedback`) are verified by the host before a draft is saved; `production`
+ * and `generated` are minted by the host. Origin follows: real = import,
+ * feedback, production; synthetic = kb, spec, generated.
+ */
+export const CaseSourceSchema = z.discriminatedUnion("kind", [
+	z.strictObject({
+		kind: z.literal("kb"),
+		path: SourceRelativePathSchema.describe("A declared data/kb document, as the Target view lists it."),
+		sha256: SourceHashSchema.describe("The document's sha256 as the Target view reported it."),
+	}),
+	z.strictObject({ kind: z.literal("spec") }),
+	z.strictObject({
+		kind: z.literal("import"),
+		path: SourceRelativePathSchema.describe("The imports/ file the case was compiled or read from."),
+		sha256: SourceHashSchema,
+		row: z.number().int().min(0).describe("Zero-based row in that file."),
+	}),
+	z.strictObject({
+		kind: z.literal("feedback"),
+		at: z.iso.datetime({ offset: true }).describe("The `at` timestamp of the mark in imports/feedback.jsonl."),
+	}),
+	z.strictObject({ kind: z.literal("production"), traceId: z.string().min(1).max(200) }),
+	z.strictObject({ kind: z.literal("generated"), generator: z.literal("judge"), receiptId: z.string().min(1).max(200).optional() }),
+]);
+export type CaseSource = z.infer<typeof CaseSourceSchema>;
+
+export const SimulatedUserDisclosureSchema = z.enum(["upfront", "on-request"]);
+export type SimulatedUserDisclosure = z.infer<typeof SimulatedUserDisclosureSchema>;
+
 export const SimulatedUserSpecSchema = z.strictObject({
 	/** What the person is trying to achieve, in their own terms. */
-	goal: boundedTaskText("simulated user goal"),
+	goal: boundedTaskText("simulated user goal").describe("What the user wants, not the reference answer or grading instructions."),
 	/** Who they are and how they write. Absent means a neutral user. */
-	persona: boundedTaskText("simulated user persona").optional(),
+	persona: boundedTaskText("simulated user persona").optional().describe("Role and communication style. Prefer knownFacts for factual details."),
+	/** Optional, not defaulted: historical specs and their hashes stay unchanged. */
+	knownFacts: boundedTaskText("simulated user known facts")
+		.refine((value) => value.trim().length > 0, "knownFacts must be non-blank")
+		.optional()
+		.describe("Facts the user knows at the start (at most 8 KiB UTF-8): e.g. their account ID, symptoms, actions already tried. Never copy hidden world.state, world.expect, expected or graders here. Omit unknown facts; missing facts are not permission to invent them."),
 	/** Agent turns the conversation may take before the host stops it. */
 	maxTurns: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS),
-	/** Plain-language condition; the user model reports when it holds. */
-	stopWhen: boundedTaskText("simulated user stop condition").optional(),
-});
+	/** User-observable condition, self-reported by the model; not a grader. */
+	stopWhen: boundedTaskText("simulated user stop condition").optional()
+		.describe("A stopping condition observable from the conversation, not hidden backend success. The model reports it; graders/world.expect independently decide pass or fail."),
+	/** A host-owned behaviour preset; absent means a neutral, cooperative user. */
+	behavior: SimulatedUserBehaviorSchema.optional()
+		.describe("How the person behaves: clear, vague, impatient, wrong-facts (believes something false about their own situation), changes-goal, multi-issue, terse, non-native. The host writes the rules; the case only names the preset."),
+	/** How known facts reach the agent: only when asked (default), or all at once. */
+	disclosure: SimulatedUserDisclosureSchema.optional()
+		.describe("on-request (default): the person states a known fact only when the agent asks for it. upfront: everything relevant in the first turn."),
+}).describe("Reactive user: input is the fixed opening; this model writes later turns. Use messages instead for a scripted history and one next reply, never both. The simulator cannot inspect tools or world state, verify backend success, or establish real-user quality. Review generated transcripts as well as scores.");
 export type SimulatedUserSpec = z.infer<typeof SimulatedUserSpecSchema>;
 
 /**
@@ -433,6 +525,10 @@ export const TaskSchema = z.strictObject({
 	 */
 	world: WorldSchema.optional(),
 	metadata: TaskMetadataSchema.optional(),
+	/** Which cell of the basket this case fills. Optional: hand-written and older cases carry none. */
+	coverage: CaseCoverageSchema.optional(),
+	/** Where the case came from; verified by the host for the model-facing kinds. */
+	source: CaseSourceSchema.optional(),
 	graders: z.array(GraderSpec).optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
@@ -493,7 +589,7 @@ export function worldExpectationGraders(task: Pick<Task, "world">): GraderSpec[]
  * surface. A case's own graders always win; the suite defaults only fill in for
  * a case that declares none.
  *
- * `loadTarget` and `ahde regrade` both come through here, so a re-graded suite
+ * `loadTarget` and `/regrade` both come through here, so a re-graded suite
  * is admitted by exactly the rules a freshly run one is.
  */
 export function resolveTaskGraders(
@@ -731,37 +827,6 @@ export function dataMaxBytes(environment: NodeJS.ProcessEnv = process.env): numb
 }
 
 /**
- * Container containment for the Target's built-in `bash`, its declared tools
- * and their `setup` step. Declaring this block *is* the choice of the container
- * backend — there is no second switch that could disagree with it. `runtime`
- * names which container implementation confines the run.
- *
- * A container backend changes the execution fingerprint and therefore starts a
- * new comparability class: evidence produced on the host is never reusable
- * against evidence produced in a container, by design.
- */
-export const ContainerBlock = z.strictObject({
-	runtime: z.enum(["docker"]).default("docker"),
-	/** A content-pinned image. Mutable tags can never identify comparable evidence. */
-	image: z
-		.string()
-		.min(1)
-		.max(512)
-		.regex(CONTAINER_IMAGE_REFERENCE, "container image must be a plain name@sha256:<digest> reference"),
-	/** Required so an OCI image-index digest never resolves to host-dependent bytes. */
-	platform: z
-		.string()
-		.min(1)
-		.max(128)
-		.regex(CONTAINER_PLATFORM_REFERENCE, "container platform must be os/arch or os/arch/variant"),
-	memoryMb: z.number().int().min(1).max(65_536).optional(),
-	cpus: z.number().min(0.1).max(64).optional(),
-	pidsLimit: z.number().int().min(1).max(4_096).optional(),
-	readOnlyRootfs: z.boolean().default(true),
-});
-export type ContainerBlock = z.infer<typeof ContainerBlock>;
-
-/**
  * A Target that is not Pi: an executable AHDE starts and speaks a versioned
  * line protocol to. `argv` is the exact command, never a shell string, so no
  * quoting rule can turn a manifest into a second parser.
@@ -782,7 +847,6 @@ export const ExecutionPolicyBlock = z
 			.default([]),
 		network: z.enum(["deny", "allow"]).default("deny"),
 		sandbox: z.enum(["required", "best-effort", "off"]).default("best-effort"),
-		container: ContainerBlock.optional(),
 		/**
 		 * Which backend runs the Target. Optional and never defaulted: a default
 		 * would put the key into the canonical JSON of every existing manifest and
@@ -812,23 +876,6 @@ export const ExecutionPolicyBlock = z
 				code: "custom",
 				path: ["sandbox"],
 				message: "execution.kind: command requires sandbox: required or best-effort; a command Target declares no containment",
-			});
-		}
-		if (!execution.container) return;
-		if (execution.sandbox === "off") {
-			context.addIssue({
-				code: "custom",
-				path: ["container"],
-				message: "execution.container requires sandbox: required or best-effort; sandbox: off declares no containment",
-			});
-			return;
-		}
-		if (!isPinnedContainerImage(execution.container.image)) {
-			context.addIssue({
-				code: "custom",
-				path: ["container", "image"],
-				message:
-					`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${execution.container.image}`,
 			});
 		}
 	});
@@ -896,7 +943,7 @@ function reservedTemperatureParam(field: string) {
 					message: `${field}.params cannot set "${key}": ${
 						field === "evalSuite.judge"
 							? "the judge is pinned to temperature 0 so grading is deterministic"
-							: "the simulated user is pinned to temperature 0 so a measured conversation is reproducible"
+							: "the simulated user is pinned to temperature 0 to reduce sampling variation, not guarantee reproducibility"
 					}`,
 				});
 			}
@@ -906,7 +953,7 @@ function reservedTemperatureParam(field: string) {
 
 /**
  * Promotion policy for judge-graded evidence: how well this project's judge
- * must agree with its human labels (`ahde label`) before evidence that leans on
+ * must agree with its human labels (`/label`) before evidence that leans on
  * it may be promoted. Absent by default — measuring agreement is worth doing
  * long before it is worth blocking on.
  */
@@ -1010,6 +1057,12 @@ const TargetManifestShape = z.strictObject({
 		judge: JudgeModelBlock.optional(),
 		/** User model for simulated-user cases; required when any task uses one. */
 		simulatedUser: SimulatedUserModelBlock.optional(),
+		/**
+		 * A second user model, for measuring simulator noise: `calibrate` with
+		 * `simulator: "alternate"` runs the same revision against itself with this
+		 * model on the second arm. Never used for evidence.
+		 */
+		simulatedUserAlternate: SimulatedUserModelBlock.optional(),
 	}),
 }).superRefine((manifest, context) => {
 	// The editable surface may never reach the evidence: a proposal that could
@@ -1300,7 +1353,7 @@ function datasetIdentity(task: Task): Record<string, unknown> {
  * Identity of the effective scoring configuration: the exact cases, the suite
  * grader defaults that fill in for cases without their own, and the judge model.
  *
- * `loadTarget` and `ahde regrade` both compute it here, so the suite hash of a
+ * `loadTarget` and `/regrade` both compute it here, so the suite hash of a
  * re-graded eval is the same kind of fact as the suite hash of a run.
  */
 /**
@@ -1520,6 +1573,8 @@ function graderDetail(spec: GraderSpec): string {
 				`${spec.withReference ? "+reference" : ""}`;
 		case "output_matches":
 			return `/${spec.pattern.slice(0, 24)}/`;
+		case "output_excludes":
+			return `not "${spec.text.slice(0, 24)}"`;
 		case "no_secret":
 			return "redaction";
 		case "exact":

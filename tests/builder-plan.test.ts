@@ -151,6 +151,17 @@ describe("the cycle as a checklist", () => {
 		expect(plan.steps.find((item) => item.marker === "current")?.id).toBe(step);
 	});
 
+	it("stands on the agent step, not the tests, while the agent is still the template", () => {
+		const unbuilt = compilePlan(view({ stage: "corpus-design", target: { ...view().target, built: false } }));
+		expect(unbuilt.steps.find((item) => item.marker === "current")?.id).toBe("harness");
+		expect(unbuilt.steps.find((item) => item.id === "harness")?.detail).toBe("still the template — build it from the description");
+		expect(planHeadline(unbuilt)).toContain("Building the agent");
+		// Built, the same stage is the tests, and the agent step is behind the operator.
+		const built = compilePlan(view({ stage: "corpus-design", target: { ...view().target, built: true } }));
+		expect(built.steps.find((item) => item.marker === "current")?.id).toBe("tests");
+		expect(built.steps.find((item) => item.id === "harness")?.marker).toBe("done");
+	});
+
 	it("marks the current step blocked when the view carries a blocker", () => {
 		const plan = compilePlan(view({ stage: "target-setup", blockers: ["Target harness is missing."] }));
 		expect(plan.steps.find((step) => step.id === "harness")?.marker).toBe("blocked");

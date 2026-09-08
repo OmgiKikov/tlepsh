@@ -27,7 +27,7 @@ import {
 /**
  * The agent's growth, version by version.
  *
- * Every fact `ahde log` prints is already durable in an immutable Candidate
+ * Every fact `/log` prints is already durable in an immutable Candidate
  * record. These tests are about the reading: bounded, ordered, honest about
  * rejections, and silent about everything sealed.
  */
@@ -482,6 +482,7 @@ it(
 			const verified = await fixture.workbench.decide({
 				kind: "verify-candidate",
 				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				exam: true,
 				reason: "Verify the applied candidate",
 			}, approvingGate());
 			if (verified.result.outcome !== "verified") throw new Error("the fixture candidate was stopped by its screen");

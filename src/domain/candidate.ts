@@ -7,6 +7,7 @@ import {
 	isDevelopmentVerdict,
 	isSealedVerdict,
 	promotableVerdicts,
+	REGRESSION_GUARDS_POLICY_ID,
 } from "./comparison-gate.js";
 
 const IdSchema = z.string().trim().min(1).max(200);
@@ -313,8 +314,18 @@ const MatchedEvaluationSchema = z.strictObject({
 	comparison: ComparisonGateEvidenceSchema.nullable().optional(),
 });
 
+/** What the base passed every time and the candidate then failed every time; see `regressionGuards`. */
+export const RegressionGuardsEvidenceSchema = z.strictObject({
+	policy: z.literal(REGRESSION_GUARDS_POLICY_ID),
+	guarded: z.number().int().nonnegative(),
+	broken: z.array(IdSchema).max(1_000).readonly(),
+}).refine((guards) => guards.broken.length <= guards.guarded, "broken guards cannot outnumber guarded tasks");
+export type RegressionGuardsEvidence = z.infer<typeof RegressionGuardsEvidenceSchema>;
+
 const CorpusMatchedEvaluationSchema = MatchedEvaluationSchema.extend({
 	corpus: CorpusIdentitySchema.nullable().optional(),
+	/** Absent on evidence recorded before the rule existed; a promotion recomputes it from the runs anyway. */
+	regressionGuards: RegressionGuardsEvidenceSchema.optional(),
 });
 
 const EvaluationEvidenceSchema = z.strictObject({
@@ -615,6 +626,9 @@ export const CandidateRecordSchema = CandidateRecordBaseSchema.superRefine((reco
 				addIssue(ctx, ["events", index, "decision"], "promotion requires v4 comparison-gate evidence on both surfaces");
 			} else if (!promotableVerdicts(developmentVerdict as never, sealedVerdict as never)) {
 				addIssue(ctx, ["events", index, "decision"], `promotion requires a sealed pass and a development verdict other than regressed (got ${developmentVerdict} / ${sealedVerdict})`);
+			}
+			if ((evaluated.evaluation.development.regressionGuards?.broken.length ?? 0) > 0) {
+				addIssue(ctx, ["events", index, "decision"], "promotion requires every regression guard kept: a development task the base passed every time cannot fail every time");
 			}
 			if (reviewed.review.recommendation !== "promote") {
 				addIssue(ctx, ["events", index, "decision"], "promotion requires a human promote recommendation");

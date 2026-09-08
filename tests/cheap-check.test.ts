@@ -17,6 +17,8 @@ import {
 	type CheapCheckResult,
 } from "../src/application/cheap-check.js";
 import { resolveDevelopmentFailureOperations } from "../src/application/builder-regression-case.js";
+import { renderCandidate } from "../src/builder/render/view.js";
+import { plainPaint } from "../src/builder/render/paint.js";
 import { loadWorkbenchInventory } from "../src/workbench/inventory.js";
 import { compareVerifiedEvalRuns } from "../src/compare.js";
 import { loadCorpus } from "../src/corpus.js";
@@ -237,6 +239,35 @@ describe("cheap check — the screen before the expensive measurement", () => {
 });
 
 describe("verify-candidate spends nothing on a flat screen", () => {
+	it("returns real verified cases immediately and pages all comparison rows beyond 60", async () => {
+		const local = await improveFixture({}, { repetitions: 1, developmentCases: 65 });
+		try {
+			const proposal = await recordFixtureProposal(local, READY_INSTRUCTION);
+			await local.workbench.decide({ kind: "apply-proposal", runId: proposal.runId, branch: "candidate/case-pages", reason: "Apply the reviewed proposal" }, approvingGate());
+			const verified = await local.workbench.decide({ kind: "verify-candidate", repetitions: SEALED_VERIFICATION_REPETITIONS, reason: "Verify the comparison" }, approvingGate());
+			if (verified.result.outcome !== "verified") throw new Error("Expected completed verification");
+			const candidate = verified.result.candidate;
+			expect(candidate.casesTotal).toBe(65);
+			expect(candidate.casesOffset).toBe(0);
+			expect(candidate.cases).toHaveLength(60);
+			expect(candidate.cases?.every((entry) => entry.input?.startsWith("Answer reviewed request "))).toBe(true);
+			expect(renderCandidate(candidate, plainPaint).join("\n")).toContain("53 more cases");
+			const seen: string[] = [];
+			for (let offset = 0; offset < 65; offset += 12) {
+				const review = await local.workbench.view({ aspect: "review", casesOffset: offset });
+				if (review.detail?.aspect !== "review" || review.detail.content.kind !== "candidate") throw new Error("Expected candidate review");
+				const content = review.detail.content;
+				expect(content).toMatchObject({ candidateId: candidate.candidateId, casesTotal: 65, casesOffset: offset });
+				seen.push(...content.cases!.slice(0, 12).map((entry) => entry.taskId));
+			}
+			expect(seen).toHaveLength(65);
+			expect(new Set(seen).size).toBe(65);
+			expect(seen.slice(0, 60)).toEqual(candidate.cases!.map((entry) => entry.taskId));
+		} finally {
+			await local.close();
+		}
+	}, 240_000);
+
 	const flatScreen: CheapCheckResult = {
 		tasks: ["task-a", "task-b"],
 		improved: 0,

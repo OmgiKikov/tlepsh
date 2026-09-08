@@ -77,8 +77,10 @@ it("keeps the durable result in the foreground when the host has no completion c
 it("refreshes ephemeral pre-turn context and shares a natural job with command status, stop and completion hooks", async () => {
 	const host = await session();
 	const first = await host.fire("before_agent_start", { systemPrompt: "Base prompt", prompt: "Test it" });
-	expect(first[0]).toMatchObject({ systemPrompt: expect.stringContaining("Base prompt") });
-	expect(first[0]).not.toHaveProperty("message");
+	// The system prompt is left alone so the provider caches it; the state of
+	// this turn travels as a hidden message beside the operator's own.
+	expect(first[0]).not.toHaveProperty("systemPrompt");
+	expect(first[0]).toMatchObject({ message: { customType: "ahde-host-state", display: false, content: expect.stringContaining("Current host state") } });
 	let signal: AbortSignal | undefined;
 	vi.spyOn(AhdeWorkbench.prototype, "decide").mockImplementation(async (_input, gate, execution) => {
 		signal = execution?.signal;
@@ -102,8 +104,9 @@ it("refreshes ephemeral pre-turn context and shares a natural job with command s
 	// The new direction sees current facts, not a second persisted old snapshot.
 	host.read.mockResolvedValue({ ...host.view, warnings: ["fresh state after the operator changed direction"] });
 	const second = await host.fire("before_agent_start", { systemPrompt: "Base prompt", prompt: "Now focus on refunds" });
-	expect(second[0]).toMatchObject({ systemPrompt: expect.stringContaining("fresh state after the operator changed direction") });
-	expect(second[0]).toMatchObject({ systemPrompt: expect.stringContaining("Active operation: null") });
+	expect(second[0]).not.toHaveProperty("systemPrompt");
+	expect(second[0]).toMatchObject({ message: { content: expect.stringContaining("fresh state after the operator changed direction") } });
+	expect(second[0]).toMatchObject({ message: { content: expect.stringContaining("Active operation: null") } });
 	await host.fire("agent_settled");
 	await drain();
 	expect(host.notes).toHaveBeenCalledTimes(1);

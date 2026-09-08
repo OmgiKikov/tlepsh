@@ -71,8 +71,7 @@ it decides.
    are bounded in total bytes and are shown to the Builder as shape, never
    content.
    An `execution.configure` intent may change the Target execution policy only
-   in the same exact reviewed Proposal; omission preserves existing policy and
-   container containment, while container replacement/removal is explicit.
+   in the same exact reviewed Proposal; omission preserves existing policy.
    Every resulting tool must validate against that policy, and the Candidate
    must still pass matched development and sealed verification before
    promotion. Before the first eval, a construction Proposal may cite the exact
@@ -133,6 +132,17 @@ it decides.
     recorded in the receipt**. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target
     credential store.
+    The agent's first build is a bootstrap of the same kind. While every
+    instruction file of the Target is byte-identical to a packaged template's
+    (a fact the host reads off the disk, never a claim a model makes), a
+    Spec-bound construction Proposal written against the current revision is
+    applied and landed in one host-confirmed step: the candidate commit is made
+    as for any Proposal, the apply receipt records `via: "first-build"`, and the
+    operator's branch is fast-forwarded onto it. No Candidate, verification or
+    sealed exam follows, because there is no agent to regress; a crash between
+    the receipt and the fast-forward leaves the Proposal `apply-pending`, and
+    the same decision finishes it. Every Proposal over a built Target — the
+    first change to an agent that exists — takes the Candidate path unchanged.
 19. Every Run in one Eval Run is materialized from the same hash-checked source
     snapshot — including a command Target's child process, which is spawned
     with that snapshot copy as its working directory and never with the
@@ -155,7 +165,15 @@ it decides.
     and development dataset hash. Publication is restart-safe across a crash
     between the canonical receipt and lineage record. Eval compatibility then
     additionally requires the current Target revision and suite hash, so the
-    same reviewed corpus can measure a later exact Target without re-publication.
+     same reviewed corpus can measure a later exact Target without re-publication.
+     New Workbench-authored drafts (schema v4) also bind the declared committed
+     KB directory trees, captured by the host rather than from task metadata.
+     Revisions inherit that binding; a changed or unreadable source blocks
+     publication before and after confirmation, including start-testing and
+     recovery of incomplete publication lineage. Evaluator-only commits leave
+     unchanged KB trees valid. Unbound v2/v3 drafts retain their identities and
+     require a visible unknown-freshness warning when a KB is present. Source
+     freshness is not proof that expected answers correctly interpret the KB.
 23. Every consequential Workbench decision is legal only in its derived stage.
     `/run` cannot skip Spec or corpus review, and inconclusive execution cannot
     advance the workflow.
@@ -202,10 +220,17 @@ it decides.
    `AGENTS.md`, skill `SKILL.md`, and tool descriptor/executable resources —
    plus, when the manifest declares `harness.files`, exactly the files that
    surface names, bounded like a skill and counted one per file in the same
-   closure rule. Host-owned configuration, the evaluation inputs, a declared
-   `data/` tree and hidden files are never readable, whatever that surface
-   globs over; a workshop over such a Target holds the declared surface and
-   nothing else. Dirty or stale revisions, undeclared or
+   closure rule. Host-owned configuration, evaluation inputs, data and hidden
+   files never become Harness resources through `harness.files`; a workshop
+   over such a Target holds the declared surface and nothing else.
+   The Target view may separately read one explicitly requested `.md`/`.txt`
+   document beneath a manifest-declared `data/kb` directory or subdirectory.
+   It reads the exact clean committed Git blob, returns complete text and its
+   content hash as read-only knowledge, and leaves the canonical resource list
+   and write permissions unchanged. Hidden, undeclared, evaluation and unsafe
+   paths remain denied. Credential-bearing text, terminal controls, invalid
+   encoding and size-limit violations fail closed. This exception neither
+   reads nor generates sealed cases. Dirty or stale revisions, undeclared or
     private paths, traversal, symlinks, unsafe modes, malformed UTF-8, and
     oversized context fail closed before Proposal compilation. Git replacement
     refs are ignored. Structured authoring must echo the host-minted context
@@ -237,11 +262,22 @@ it decides.
     verdict other than `regressed`. A failed or underpowered sealed gate is
     recorded as evaluated evidence and refused at promotion; it is never thrown
     away. A verification never starts on a holdout smaller than the policy
-    minimum. Older evidence (v1–v3) stays readable and renders its verdict, but
+    minimum. A check (`verify-candidate` without `exam`) measures the development
+    basket only and records a development-only candidate; `ship` runs the sealed
+    exam as a new candidate that cites the check's exact development runs when
+    the two revisions and the corpus match, and measures development again only
+    when they differ. Older evidence (v1–v3) stays readable and renders its verdict, but
     a promotion on it is refused until the candidate is verified again. Early
     ship readiness host-verifies the actual private corpus bytes, mode, hash,
     parse, and task count; Builder receives only the coarse state `missing`,
     `underpowered`, `ready`, or `unavailable`.
+    One per-task rule does gate, and it is the regression suite
+    (`regression-guards-v1`, 2026-09-07): a development task the baseline
+    passed in every repetition that the candidate fails in every repetition
+    is a broken guard, and a promotion with a broken guard is refused. The
+    rule reads the same paired rows as the gate, excludes errored tasks the
+    same way, is recorded on the evaluated evidence and recomputed from the
+    runs at promotion; it never reads the sealed exam.
 35. Noise is measured, never assumed: an A/A calibration of the same Target
     revision is the receipt for run-to-run noise, informs the recommended
     number of repetitions, and is never promotion evidence.
@@ -289,7 +325,7 @@ it decides.
     killed before the `runs/screens/` marker is written still leaves a run
     nothing admits. The marker remains as belt-and-braces and fails closed: an
     unreadable marker refuses everything it might name.
-42. `ahde improve` binds a proposal to a cycle by SURFACE — dataset label and
+42. The improvement loop (`improve`) binds a proposal to a cycle by SURFACE — dataset label and
     hash, suite hash, Target revision and approved Spec — plus the failure mode the proposal
     attests to, never by the id of an eval run the invocation itself just
     minted. A proposal prepared before the command therefore matches; one
@@ -327,3 +363,36 @@ it decides.
     kind of check. A missing, oversized, malformed or symlinked world file
     makes the Run an error (invariant 9); a `world_state` check on a case that
     declares no world fails loudly rather than passing on nothing.
+45. A case is never removed for failing. After a run the basket is read, not
+    pruned: a case the agent passed in every repetition is a regression check
+    and the next wave goes harder in its cell; a case it failed in every
+    repetition stays as capability work until the critic finds a fault in the
+    test itself; a case that moved between repetitions is noise, not a
+    verdict. Only an invalid test — unsolvable from its cited source, its world
+    and the declared tools; ambiguous in its success criteria; contradictory
+    in its own conditions; or checked wrongly — is repaired or excluded, and
+    an exclusion (`remove`) records its reason. An ambiguous request with
+    `difficulty: clarify` is the point of the case, never a defect. A zero
+    pass rate is a reason to review a case's quality, never to drop it, and no
+    selection may improve the metrics by deleting hard tasks.
+46. The critic reads cases, never the agent. `critique-corpus` shows the judge
+    the cases and their verified sources — `kb` documents at the bound
+    revision, `import` rows, `feedback` marks, the approved Spec — and nothing
+    the agent answered; its verdicts (`valid`, `repair` with a fix, `invalid`
+    with reasons, `unreviewed` when it could not answer) are a receipt keyed
+    by the subject's hash. A draft with `invalid` findings is not published
+    without `force`, which is recorded. The sealed generator drops a generated
+    case only on validity, before sealing, and keeps only coarse categories of
+    the reasons, never their text. Every model-facing `source` is verified by
+    the host before a draft is saved; `production` and `generated` sources are
+    host-minted.
+47. Synthetic realism and difficulty are different questions. Synthetic and
+    real cases (origin follows the source: import, feedback and production are
+    real) are compared only inside the same coverage cell — the same job,
+    difficulty and state — and a gap there is information, never a reason to
+    regenerate; until a comparable cell exists the reading says `unverified`.
+    The simulated user's behaviour presets and disclosure rules are written by
+    the host, never by the model; simulator noise is measured with
+    `evalSuite.simulatedUserAlternate` on the second arm of an A/A pair whose
+    only allowed provenance difference is the user model, and that pair is
+    never promotion evidence.

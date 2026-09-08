@@ -15,7 +15,6 @@ import {
 	boundTargetFeedbackNote,
 	MAX_TARGET_FEEDBACK_NOTE_CHARS,
 	readTargetFeedback,
-	runTargetFeedbackCommand,
 	TARGET_FEEDBACK_PATH,
 	type TargetFeedbackMark,
 } from "../src/application/target-feedback.js";
@@ -122,62 +121,6 @@ describe("bounding a mark before it leaves the Target session", () => {
 		const long = boundTargetFeedbackNote("x".repeat(MAX_TARGET_FEEDBACK_NOTE_CHARS + 50));
 		expect(long).toHaveLength(MAX_TARGET_FEEDBACK_NOTE_CHARS);
 		expect(long?.endsWith("…")).toBe(true);
-	});
-});
-
-describe("ahde feedback list|clear", () => {
-	it("reports counts and the first user turn without printing a transcript", () => {
-		const projectDir = projectDirectory();
-		appendTargetFeedbackMark(projectDir, mark({ verdict: "good" }));
-		appendTargetFeedbackMark(projectDir, mark({
-			verdict: "bad",
-			note: "не вызвал инструмент",
-			at: "2026-08-30T08:00:00.000Z",
-			messages: [
-				{ role: "user", content: `${"очень длинный вопрос ".repeat(20)}` },
-				{ role: "assistant", content: "SECRET_ASSISTANT_ANSWER" },
-			],
-		}));
-
-		const lines = runTargetFeedbackCommand({ projectDir, action: "list" });
-
-		expect(lines[0]).toBe(`${TARGET_FEEDBACK_PATH}  2 marks (1 good, 1 bad)`);
-		expect(lines[1]).toBe("last 2:");
-		// Newest first, verdict + timestamp + a truncated first user turn.
-		expect(lines[2]).toContain("bad ");
-		expect(lines[2]).toContain("2026-08-30T08:00:00.000Z");
-		expect(lines[2]).toContain("очень длинный вопрос");
-		expect(lines[2]).toContain("…");
-		expect(lines[2]).toContain("не вызвал инструмент");
-		expect(lines.join("\n")).not.toContain("SECRET_ASSISTANT_ANSWER");
-		expect(lines.join("\n")).toContain("the dataset flow previews it");
-	});
-
-	it("points at ahde target when nothing has been marked yet", () => {
-		const lines = runTargetFeedbackCommand({ projectDir: projectDirectory(), action: "list" });
-
-		expect(lines[0]).toBe(`no ${TARGET_FEEDBACK_PATH} yet`);
-		expect(lines[1]).toContain("/good");
-		expect(lines[1]).toContain("alt+x");
-	});
-
-	it("moves the file aside instead of deleting it, and refuses an unknown action", () => {
-		const projectDir = projectDirectory();
-		appendTargetFeedbackMark(projectDir, mark());
-
-		expect(runTargetFeedbackCommand({
-			projectDir,
-			action: "clear",
-			now: () => "2026-08-30T09:10:11.500Z",
-		})).toEqual(["moved imports/feedback.jsonl → imports/feedback.2026-08-30T09-10-11-500Z.jsonl (1 marks)"]);
-
-		expect(existsSync(join(projectDir, TARGET_FEEDBACK_PATH))).toBe(false);
-		const archive = join(projectDir, "imports", "feedback.2026-08-30T09-10-11-500Z.jsonl");
-		expect(JSON.parse(readFileSync(archive, "utf8").trim()) as TargetFeedbackMark).toEqual(mark());
-		expect(runTargetFeedbackCommand({ projectDir, action: "clear" }))
-			.toEqual([`no ${TARGET_FEEDBACK_PATH} to clear`]);
-		expect(() => runTargetFeedbackCommand({ projectDir, action: "purge" }))
-			.toThrow(/usage: ahde feedback list\|clear/);
 	});
 });
 

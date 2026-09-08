@@ -128,7 +128,12 @@ async function mockKbJudge(): Promise<MockModelHandle> {
 					? `${KB_PRICES[index]} рублей в месяц`
 					: `Факт ${question} отрывка ${passageId}`,
 			}));
-			return { text: JSON.stringify({ questions }) };
+			// Every third passage is also asked for one question the passage does
+			// not answer; a judge that ignores the request shortens the exam.
+			const noAnswer = firstUser.includes("no-answer question")
+				? { noAnswer: { question: `${SENTINEL} Сколько стоит доставка по отрывку ${passageId}?`, invented: `${SENTINEL} 1234 рубля` } }
+				: {};
+			return { text: JSON.stringify({ questions, ...noAnswer }) };
 		},
 		steps: [],
 	}]);
@@ -563,6 +568,9 @@ describe("generate-holdout: the exam the judge writes", () => {
 						seed: null,
 						reviewPath: null,
 						estimatedCostUsd: 0.12,
+						coverageCells: [],
+						coverageJobs: [],
+						criticCalls: 0,
 					};
 				},
 			},
@@ -628,8 +636,8 @@ describe("generate-holdout: the exam the judge writes from the knowledge base", 
 		// The passport's one word about the exam's provenance.
 		expect(sealedExamOrigin(stateRoot, PROJECT, sealed[0]!.id)).toBe("judge-generated-kb");
 		const receipt = listSealedSynthReceipts(stateRoot, PROJECT)[0]!;
-		expect(receipt.schemaVersion).toBe(3);
-		expect(receipt.schemaVersion === 3 && receipt.source).toBe("kb");
+		expect(receipt.schemaVersion).toBe(4);
+		expect(receipt.schemaVersion === 4 && receipt.source).toBe("kb");
 		expect(JSON.stringify(receipt)).not.toContain(SENTINEL);
 	});
 
@@ -681,12 +689,22 @@ describe("generate-holdout: the exam the judge writes from the knowledge base", 
 		const runtimeIds = new Set(readKnowledgeBase(projectDir).map((chunk) => chunk.id));
 		expect(runtimeIds.size).toBe(3);
 		const perChunk = new Map<string, number>();
+		let noAnswerCases = 0;
 		for (const task of loaded.tasks) {
 			const chunk = String(task.metadata?.kbChunk);
 			expect(runtimeIds.has(chunk)).toBe(true);
-			expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			// A no-answer question is scored by what the answer must NOT say: the
+			// passage holds no answer, so there is nothing for the agent to cite.
+			if (task.coverage?.difficulty === "no-answer") {
+				noAnswerCases += 1;
+				expect(task.graders?.[0]?.type).toBe("output_excludes");
+			} else {
+				expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			}
 			perChunk.set(chunk, (perChunk.get(chunk) ?? 0) + 1);
 		}
+		// Every third passage spent one of its questions on a trap.
+		expect(noAnswerCases).toBe(2);
 		// Three chunks, six finer passages, at most three questions each.
 		expect([...perChunk.values()].sort()).toEqual([5, 5, 5]);
 		expect(new Set(loaded.tasks.map((task) => task.metadata?.kbPassage)).size).toBe(6);

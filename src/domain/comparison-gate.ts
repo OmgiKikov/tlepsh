@@ -109,6 +109,36 @@ export interface CompareRow {
 	bTotal: number;
 }
 
+/**
+ * The regression suite, read off the paired rows instead of a label: every
+ * task the baseline passed in each repetition is one the agent "used to
+ * handle", and a candidate that fails such a task in each repetition has
+ * broken it. Strict on both sides so noise alone rarely qualifies — a task
+ * at 50% per trial flips this way in (0.5^k)^2 of comparisons — and a task
+ * that does qualify is worth a human before a release. Errored tasks are
+ * excluded exactly as the gate excludes them (invariant 9). Development
+ * surface only: the exam's content is unknown and its own gate is relative.
+ */
+export const REGRESSION_GUARDS_POLICY_ID = "regression-guards-v1" as const;
+
+export interface RegressionGuards {
+	policy: typeof REGRESSION_GUARDS_POLICY_ID;
+	/** Tasks the baseline passed in every repetition. */
+	guarded: number;
+	/** Those the candidate then failed in every repetition, sorted. */
+	broken: readonly string[];
+}
+
+export function regressionGuards(rows: readonly CompareRow[], repetitions: number): RegressionGuards {
+	const guarded = rows.filter((row) =>
+		taskExclusion(row, repetitions) === null && row.aTotal > 0 && row.aPass === row.aTotal);
+	const broken = guarded
+		.filter((row) => row.bTotal > 0 && row.bPass === 0)
+		.map((row) => row.taskId)
+		.sort(compareUtf8);
+	return { policy: REGRESSION_GUARDS_POLICY_ID, guarded: guarded.length, broken };
+}
+
 export interface CompareSummary {
 	taskCount: number;
 	baselinePassRate: number;

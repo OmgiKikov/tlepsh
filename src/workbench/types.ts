@@ -1,6 +1,4 @@
 import type { WorkbenchNext } from "./next-actions.js";
-import type { ModelExperimentRecord, ModelChangeReceipt } from "../application/model-experiment.js";
-import type { WorkbenchRunInspection } from "./run-inspection.js";
 import type { ImprovementSelectionSummary } from "../application/improvement-selection.js";
 import { z } from "zod";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../builder/proposal-contract.js";
@@ -29,12 +27,14 @@ import {
 	ProposalBasisSelectionSchema,
 } from "../application/improvement-brief.js";
 import type { RunEventListener } from "../run-events.js";
-import type { GraderSpec, TargetManifest } from "../manifest.js";
+import type { CaseCoverage, CaseDifficulty, GraderSpec, TargetManifest } from "../manifest.js";
+import type { CoverageDensity, CaseOrigin } from "../domain/case-coverage.js";
+import type { CriticCounts, CriticFinding } from "../application/case-critic.js";
 import { AgentSpecSchema, type AgentSpec } from "../spec.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
 import type { PersistedBuilderRun } from "../application/builder-proposal.js";
 import type { CandidateImpact } from "../application/candidate-impact.js";
-import type { TargetAdoptionReceipt } from "../application/target-adoption.js";
+import type { WorkbenchCandidateCase } from "./candidate-cases.js";
 import type { TargetAuthoringContext } from "../application/target-authoring-context.js";
 import type { ExperimentHistory } from "../application/experiment-history.js";
 import type { ImprovementBrief } from "../application/improvement-brief.js";
@@ -47,7 +47,6 @@ import type {
 } from "../application/improvement-loop.js";
 import type { ProposalSearchResult } from "../application/proposal-search.js";
 import type { CandidateRegradeProjection, RegradeDiff } from "../application/regrade-decision.js";
-import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
 // A regex, not a refinement: the generated tool schema carries `pattern` so the
@@ -171,6 +170,11 @@ export interface WorkbenchCalibrationProjection {
 	recommendedExamCases: number | null;
 	/** Development verdict; `inconclusive` is the healthy A/A result. */
 	verdict: GateVerdict;
+	/**
+	 * Present when the second arm ran with the alternate user model: the band is
+	 * then simulator noise, and this record is never shipping evidence.
+	 */
+	simulator?: { kind: "alternate"; model: string } | null;
 	at: string;
 }
 
@@ -204,6 +208,13 @@ export interface WorkbenchCandidateSummary {
 		comparison: ComparisonSummaryEvidence | null;
 		/** v4 gate verdict; null for legacy (v1–v3) evidence. */
 		gate: WorkbenchGateProjection | null;
+		/**
+		 * The regression suite of this pair: how many development tasks the base
+		 * passed every time, and which of them the candidate then failed every
+		 * time. One broken guard refuses the promotion. Absent on evidence
+		 * recorded before the rule existed.
+		 */
+		regressionGuards?: { policy: string; guarded: number; broken: readonly string[] };
 	} | null;
 	sealedHoldout: {
 		executed: boolean;
@@ -230,6 +241,15 @@ export interface WorkbenchCandidateSummary {
 	 * decided by the graders that were in force when its answers were scored.
 	 */
 	regraded?: CandidateRegradeProjection | null;
+	/**
+	 * The development comparison case by case, regressions first, bounded. A
+	 * review aid the host reads off the two public eval runs; absent when the
+	 * summary was built without a runs root, null when an arm could not be read.
+	 */
+	cases?: WorkbenchCandidateCase[] | null;
+	/** Total comparison rows and the zero-based offset of this bounded page. */
+	casesTotal?: number;
+	casesOffset?: number;
 	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
 	promotion: { tag: string; reason: string; at: string } | null;
 	rejection: { reason: string; at: string } | null;
@@ -302,6 +322,82 @@ export type WorkbenchEvidenceLinkProjection =
 	| { available: true; url: string; label?: string }
 	| { available: false };
 
+/** The basket as a matrix: the Spec's jobs × difficulty, plus behaviours, states and origins. */
+export type WorkbenchCoverageProjection = CoverageDensity;
+
+/** One critic reading of one subject, as the panel and the model see it. */
+export interface WorkbenchCriticProjection {
+	receiptId: string;
+	judge: string;
+	at: string;
+	counts: CriticCounts;
+	findings: CriticFinding[];
+}
+
+export type WorkbenchBasketStanding = "saturated" | "failing" | "unstable";
+export type WorkbenchBasketValidity = "valid" | "repair" | "invalid" | "unreviewed";
+
+export interface WorkbenchBasketCase {
+	taskId: string;
+	standing: WorkbenchBasketStanding;
+	pass: number;
+	total: number;
+	/** The critic's verdict on the case itself, or `unreviewed` when nobody asked. */
+	validity: WorkbenchBasketValidity;
+	origin: CaseOrigin;
+	coverage: CaseCoverage | null;
+	/** New since the previous published corpus of this lineage. */
+	newInWave: boolean;
+}
+
+/** One comparable cell, synthetic against real: the same job, difficulty and state. */
+export interface WorkbenchBasketOriginCell {
+	job: string;
+	difficulty: CaseDifficulty;
+	state: string | null;
+	real: { cases: number; passRate: number };
+	synthetic: { cases: number; passRate: number };
+	/** synthetic − real, in points; information, never a verdict on either. */
+	gapPoints: number;
+}
+
+/**
+ * The basket read after a run. Nothing here removes a case: a failing valid case
+ * is capability work, a failing case the critic doubts is a review of the test's
+ * own criteria, a saturated case is a regression check, and the next wave is
+ * aimed at the empty cells and the modes still unresolved.
+ */
+export interface WorkbenchBasketReading {
+	evalRunId: string;
+	cases: WorkbenchBasketCase[];
+	counts: {
+		saturated: number;
+		failing: number;
+		unstable: number;
+		failingValid: number;
+		failingDoubtful: number;
+		failingUnreviewed: number;
+	};
+	/** Null when this corpus has no previous publication to compare with. */
+	wave: { newCases: number; newFailing: number; saturated: boolean } | null;
+	origins: {
+		real: number;
+		synthetic: number;
+		unknown: number;
+		/** Cells where both origins have cases; empty until real cases exist. */
+		comparable: WorkbenchBasketOriginCell[];
+		/** `unverified` until a comparable cell exists; `compared` after. */
+		realism: "unverified" | "compared";
+	};
+	nextWave: {
+		emptyCells: { job: string; difficulty: CaseDifficulty }[];
+		/** Failure modes that still fail; the wave targets these. */
+		targetModes: string[];
+		/** Jobs whose cases all saturated; the wave goes harder there. */
+		harderJobs: string[];
+	};
+}
+
 export interface WorkbenchEvaluationProjection {
 	evalRunId: string;
 	summary: EvalRunSummary;
@@ -351,6 +447,13 @@ export type WorkbenchReviewDetail =
 		importSource: NonNullable<BuilderCorpusDraft["importSource"]> | null;
 		tasks: BuilderCorpusDraft["tasks"];
 		taskProvenance: NonNullable<BuilderCorpusDraft["taskProvenance"]>;
+		sourceFreshness?: import("./corpus-publication.js").CorpusSourceFreshness | null;
+		/** The matrix this draft fills, against the approved Spec's jobs. */
+		coverage?: WorkbenchCoverageProjection;
+		/** The critic's last reading of exactly this draft hash; null when it never read it. */
+		critic?: WorkbenchCriticProjection | null;
+		/** Cases removed down this draft's lineage, each with the reason its removal recorded. */
+		exclusions?: { taskId: string; reason: string; at: string }[];
 	}
 	| ({ kind: "proposal" } & WorkbenchProposalReview & WorkbenchTargetedModeTitles)
 	| ({ kind: "applied-proposal" } & WorkbenchProposalReview & WorkbenchTargetedModeTitles & {
@@ -383,6 +486,8 @@ export interface WorkbenchTracesDetail {
 	judgeAgreement?: WorkbenchCandidateSummary["judgeAgreement"];
 	/** Grader results this run lost to a judge that said it could not tell. */
 	judgeAbstained?: number;
+	/** The basket read after this run, the same object the run result carries. */
+	basket?: WorkbenchBasketReading;
 	/**
 	 * The worlded cases of the basket this run scored, bounded, each keyed by
 	 * the task it belongs to.
@@ -423,7 +528,6 @@ export interface WorkbenchDatasetDetail {
 }
 
 export type WorkbenchDetail =
-	| { aspect: "models"; content: { experiments: ModelExperimentRecord[]; selected: ModelExperimentRecord | null; selectedRun?: WorkbenchRunInspection } }
 	| { aspect: "review"; content: WorkbenchReviewDetail }
 	| { aspect: "traces"; content: WorkbenchTracesDetail }
 	| { aspect: "target"; content: WorkbenchTargetDetail }
@@ -492,6 +596,21 @@ export type WorkbenchWorkshopSummary =
 		workshopId: string | null;
 	};
 
+/**
+ * What the newest diagnosis can and cannot seed. `obstacle` is the one thing
+ * between the operator and a proposal when `proposable` is false: a judge
+ * that could not decide, noise below the reproduction floor, a run that
+ * ended in errors, or nothing failing at all. Each wants a different move,
+ * and none of them is a workshop.
+ */
+export interface WorkbenchDiagnosisReading {
+	evalRunId: string;
+	proposable: boolean;
+	obstacle: "judge-abstained" | "unstable" | "errored" | "nothing-failed" | null;
+	/** Grader verdicts the judge declined to give in that evaluation. */
+	judgeAbstained: number;
+}
+
 export interface WorkbenchView {
 	schemaVersion: 1;
 	project: { id: string; directory: string };
@@ -501,11 +620,27 @@ export interface WorkbenchView {
 	guidance?: WorkbenchNext;
 	/** Optional read-only observation, verified against this revision's configured instrument. */
 	finding?: import("./current-finding.js").CurrentAgentFinding;
+	/**
+	 * Whether the evidence an improvement workshop would bind to can seed a
+	 * proposal. Present at `improvement-authoring` only: the stage says a
+	 * diagnosis exists, this says whether it names a defect a harness change
+	 * can answer. Absent when that evidence could not be read.
+	 */
+	diagnosis?: WorkbenchDiagnosisReading;
 	target: {
 		status: "missing" | "bootstrap-required" | "ready";
 		id: string | null;
 		gitSha: string | null;
 		model: WorkbenchTargetModelSummary | null;
+		/**
+		 * Whether somebody has written this agent yet. False while every
+		 * instruction file is still the packaged template's, byte for byte: the
+		 * next useful step is then to build the agent from its approved Spec, and
+		 * the first build lands as the working version instead of a candidate.
+		 * Absent on a view serialized before the fact existed, and on a missing
+		 * Target.
+		 */
+		built?: boolean;
 		/**
 		 * The two models a measurement uses besides the agent. A `null` role means
 		 * the manifest has no such block — the thing the Builder checks before it
@@ -549,6 +684,12 @@ export interface WorkbenchView {
 	 * derived from. Absent means the offer was never made.
 	 */
 	judgeCalibration?: { labelled: number; offered: boolean };
+	/**
+	 * At `candidate-verification`: the check of the applied change, once one
+	 * has run — its development verdict and broken guards — so the next step
+	 * is “ship it” rather than “check”. Absent while the change is unchecked.
+	 */
+	checkedChange?: { candidateId: string; verdict: GateVerdict | null; brokenGuards: number };
 	blockers: string[];
 	/**
 	 * The same blockers as a typed reason, index-aligned with {@link blockers}.
@@ -605,9 +746,8 @@ export const WorkbenchViewIncludeSchema = z.enum(["selections"]);
 export type WorkbenchViewInclude = z.infer<typeof WorkbenchViewIncludeSchema>;
 
 export const WorkbenchViewQuerySchema = z.strictObject({
-	aspect: z.enum(["summary", "traces", "review", "target", "history", "dataset", "models"]).optional(),
-	experimentId: ArtifactIdSchema.optional(),
-	armId: z.enum(["baseline", "model-1", "model-2"]).optional(),
+	aspect: z.enum(["summary", "traces", "review", "target", "history", "dataset"]).optional(),
+	casesOffset: z.number().int().nonnegative().optional().describe("Zero-based candidate comparison offset, review only"),
 	runId: ArtifactIdSchema.optional(),
 	resourcePath: z.string().min(1).max(500).optional(),
 	/**
@@ -617,18 +757,11 @@ export const WorkbenchViewQuerySchema = z.strictObject({
 	 */
 	include: z.array(WorkbenchViewIncludeSchema).max(1).optional(),
 }).superRefine((query, context) => {
-	if (query.experimentId !== undefined && query.aspect !== "models") {
-		context.addIssue({ code: "custom", path: ["experimentId"], message: "experimentId is valid only for the models view" });
+	if (query.casesOffset !== undefined && query.aspect !== "review") {
+		context.addIssue({ code: "custom", path: ["casesOffset"], message: "casesOffset is valid only for candidate review" });
 	}
-	if (query.armId !== undefined && query.aspect !== "models") {
-		context.addIssue({ code: "custom", path: ["armId"], message: "armId is valid only for the models view" });
-	}
-	if (query.runId !== undefined && query.aspect !== "traces" && query.aspect !== "models") {
-		context.addIssue({ code: "custom", path: ["runId"], message: "runId is valid only for traces or models" });
-	}
-	if (query.aspect === "models" && (query.runId !== undefined || query.armId !== undefined) &&
-		(query.experimentId === undefined || query.armId === undefined || query.runId === undefined)) {
-		context.addIssue({ code: "custom", path: ["runId"], message: "model run inspection requires experimentId, armId and runId together" });
+	if (query.runId !== undefined && query.aspect !== "traces") {
+		context.addIssue({ code: "custom", path: ["runId"], message: "runId is valid only for traces" });
 	}
 	if (query.resourcePath !== undefined && query.aspect !== "target" && query.aspect !== "dataset") {
 		context.addIssue({
@@ -960,6 +1093,18 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("publish-corpus"),
 		draftId: ArtifactIdSchema.optional(),
 		name: NonBlankSchema.max(200).optional(),
+		/** Publish even though the critic marked cases invalid: the operator's explicit call, recorded. */
+		force: z.boolean().optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	/**
+	 * The critic: the judge model reads every case of the current draft — or of
+	 * the published development corpus when no draft is open — for validity
+	 * only, never for how the agent scored. Judge spend, no Target call.
+	 */
+	z.strictObject({
+		kind: z.literal("critique-corpus"),
+		draftId: ArtifactIdSchema.optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -1029,23 +1174,11 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 	z.strictObject({
 		kind: z.literal("calibrate"),
 		repetitions: z.number().int().min(1).max(10),
-		reason: NonBlankSchema.max(4_000),
-	}),
-	z.strictObject({
-		kind: z.literal("model-experiment"),
-		/** Alternatives only: the current Target model is always the control. */
-		models: z.array(TargetModelSelectionSchema).min(1).max(2),
-		repetitions: z.number().int().min(1).max(5),
-		/** Maximum Target executions, across all arms; this is not a USD cap. */
-		executionBudget: z.number().int().min(1).max(10_000),
-		qualityTolerance: z.number().finite().min(0).max(0.2),
-		objective: z.enum(["cost", "latency"]),
-		reason: NonBlankSchema.max(4_000),
-	}),
-	z.strictObject({
-		kind: z.literal("accept-model"),
-		experimentId: ArtifactIdSchema,
-		armId: ArtifactIdSchema,
+		/**
+		 * `alternate` runs the second arm with `evalSuite.simulatedUserAlternate`
+		 * so the band measures the simulator, not the agent. Never evidence.
+		 */
+		simulator: z.enum(["same", "alternate"]).optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	/**
@@ -1084,6 +1217,11 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("verify-candidate"),
 		builderRunId: ArtifactIdSchema.optional(),
 		repetitions: z.number().int().min(1).max(10),
+		/**
+		 * Run the sealed exam as well. A plain check measures the development
+		 * basket only; `ship` sets this and runs the exam on the checked change.
+		 */
+		exam: z.boolean().optional(),
 		/**
 		 * Spend the full verification even when the cheap check found nothing.
 		 * The screen is a screen: it can be wrong, and an operator who has read
@@ -1262,7 +1400,7 @@ export interface WorkbenchDatasetCase {
 	 * message. The operator confirms an import by reading these sample cases, so
 	 * a goal and a persona that shape every turn must be visible there.
 	 */
-	simulatedUser: { goal: string; persona: string | null; maxTurns: number; stopWhen: string | null } | null;
+	simulatedUser: { goal: string; persona: string | null; knownFacts: string | null; maxTurns: number; stopWhen: string | null } | null;
 	/**
 	 * The world a case happens in. `state` and each expectation's `value` are
 	 * bounded, redacted canonical JSON rather than live data: this is a thing a
@@ -1317,6 +1455,8 @@ export interface WorkbenchRunEvalResult {
 	 * made the offer. Ten labels is a prompt threshold, not a gate.
 	 */
 	judgeCalibration?: { labelled: number; offered: boolean };
+	/** The basket read after this run: standing, validity, origin and the next wave. */
+	basket?: WorkbenchBasketReading;
 }
 
 /**
@@ -1406,7 +1546,7 @@ export interface WorkbenchShipResult {
 	guards: WorkbenchRegressionGuardsProjection | null;
 }
 
-/** What `ahde improve` did, cycle by cycle. */
+/** What the improvement loop did, cycle by cycle. */
 export interface WorkbenchImproveResult {
 	cycles: ImprovementLoopCycle[];
 	stopReason: ImprovementLoopStopReason;
@@ -1426,8 +1566,6 @@ export interface WorkbenchImproveResult {
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */
 export interface WorkbenchDecisionResultMap {
-	"model-experiment": { experiment: ModelExperimentRecord };
-	"accept-model": { receipt: ModelChangeReceipt };
 	"scaffold-target": { targetId: string; targetGitSha: string; receiptId: string };
 	"wrap-target": { targetId: string; targetGitSha: string; receiptId: string; entry: string };
 	"configure-target": { targetId: string; targetGitSha: string; receiptId: string; credentialEnv: string };
@@ -1444,6 +1582,10 @@ export interface WorkbenchDecisionResultMap {
 		taskCount: number;
 		publicationReceiptId: string;
 		lineageHash: string;
+	};
+	"critique-corpus": WorkbenchCriticProjection & {
+		/** What the critic read: the draft or the published corpus. */
+		subject: { kind: "corpus-draft" | "development-corpus"; id: string };
 	};
 	/**
 	 * A draft, plus how many cases the exam took. The sealed corpus id lives in
@@ -1476,6 +1618,12 @@ export interface WorkbenchDecisionResultMap {
 		generator: string;
 		promptHash: string;
 		reviewPath?: string;
+		/** Cases that carry a coverage cell, cases without one, labels the host refused. */
+		coverage?: { labelled: number; unlabelled: number; droppedLabel: number };
+		/** The critic's pass before sealing: counts and coarse categories, never a case. */
+		critic?: { reviewed: number; dropped: number; byCategory: Record<string, number> };
+		/** The review draft's sibling file with the critic's verdicts, in review mode. */
+		criticAnnotationsPath?: string;
 	};
 	"run-eval": WorkbenchRunEvalResult;
 	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
@@ -1496,6 +1644,13 @@ export interface WorkbenchDecisionResultMap {
 		proposalHash: string;
 		/** Present on the product Apply path; omitted by low-level recovery callers. */
 		verification?: WorkbenchVerifyCandidateResult | WorkbenchVerificationBlocked;
+		/**
+		 * Present exactly when this apply was the agent's first build: the diff
+		 * landed on the operator's branch as the working version, with no
+		 * candidate and no verification, because the Target was still the
+		 * template and there was nothing to compare it against.
+		 */
+		firstBuild?: { branch: string; targetGitSha: string };
 		/**
 		 * Development cases the host drafted for every tool this proposal created
 		 * or changed. A draft, never a publication: what the agent does with a new
@@ -1548,6 +1703,3 @@ export type WorkbenchDecisionResult = {
 		view: WorkbenchView;
 	};
 }[WorkbenchDecisionInput["kind"]];
-
-export type WorkbenchAdoptionReceiptSummary = Pick<TargetAdoptionReceipt, "receiptId" | "adoptedAt">;
-export type WorkbenchContinuationReceiptSummary = Pick<CycleContinuationReceipt, "receiptId" | "continuedAt">;

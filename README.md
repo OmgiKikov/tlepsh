@@ -8,8 +8,8 @@ report with the exact diff, quality, cost and uncertainty.
 Work in the terminal conversation (`ahde`): describe the outcome, inspect progress,
 change direction, and let the Builder carry the work through the next useful step.
 Open the optional localhost Evidence link for detailed recorded conversations and
-before/after comparisons. Scripts and platforms can drive the same engine through
-the CLI and `ahde serve`. AHDE changes instructions, skills and declared tools;
+before/after comparisons. Scripts can drive the same engine through the CLI.
+AHDE changes instructions, skills and declared tools;
 accepting an exact change and releasing a version remain host-owned decisions.
 
 ## Install
@@ -38,15 +38,11 @@ npm run demo
 ```
 
 The demo takes a wrong refund answer through a retrieval fix, matched evaluation,
-sealed verification and a released version. It prints paths to the HTML release
-report, RAG trace, passport and dataset. It uses a scripted local model and needs
-no API key. It proves the workflow; a real model's quality still has to be measured.
-
-`npm run demo:models` demonstrates model selection with three scripted local models:
-one retains the expected answers at lower fixture rates, another is cheaper but
-fails six cases. It runs 90 real Pi executions, inspects a recorded regression,
-accepts the exact model change, then establishes a new 15-case baseline. All model
-answers and prices in this demo are fixtures; it makes no claim about real models.
+sealed verification and a released version. It shows the terminal case table,
+failed conversation, numbered diff, before/after case scores and version card;
+report, passport and dataset paths remain available afterwards. Models and
+demo-host confirmations are scripted, with no API key or external calls. This
+exercises execution and rendering, not unscripted Builder behavior or usability.
 
 `npm run demo:pilot` runs two Python profiles: a RAG agent and a service agent
 with accounts and tickets. Each has 15 golden cases plus separate capability
@@ -73,48 +69,62 @@ adapter, your own test basket, and the first run. Use `ahde target` to talk to t
 `/good` and `/bad` record feedback that can become test cases. The minimal Pi
 starter remains the default for a bare `ahde init my-agent`.
 
-Tell the Builder what to do in your own words: “test it”, “show why it failed”,
-“prepare a fix”, “check the change”, “show the version report”. Commands are
-optional shortcuts. The host shows the exact description, cases, diff or release
+A new agent is built before it is tested. Describe it, approve the description,
+and the Builder writes the instructions, skills and tools in a workshop and
+shows you the diff; accepting that first build makes it the working agent
+without a candidate or a verification, because there is no agent yet to compare
+it with. The tests come next and measure the agent you actually have; every
+later change is checked on the development basket, and the sealed exam runs
+once, at ship, citing the check's own development runs. An
+adopted Python agent, or a template whose instructions you edited yourself,
+already exists and starts at the tests.
+
+Tell the Builder what to do in your own words: “build it”, “test it”, “show why
+it failed”, “prepare a fix”, “check the change”, “show the version report”.
+Commands are optional shortcuts. The host shows the exact description, cases, diff or release
 before a consequential decision. Routine measurements proceed under the existing
 cost policy; a changed or unusually expensive scope can need a new decision.
 The browser is a read-only explanation of recorded work, opened when useful.
 The compact Pi commands below are optional expert shortcuts for the terminal.
 
-For a Pi agent, say **“make it cheaper”** or **“compare faster models on my cases”**.
-The Builder reads the host's available model catalog and prepares one or two
-alternatives against the current model. One review pins the exact agent revision,
-published cases, repetitions, score-loss tolerance and maximum Target executions.
-The experiment runs private copies, supports the same background progress and
-stop action, and leaves the active agent unchanged. Its results survive restart;
-ask to inspect a particular regression or the previous model experiment.
+No test basket yet? Ask: **“Build a small test set from the description and our
+knowledge base, including a customer who only gives their account number when
+asked. Show me the cases before running them.”** The Builder can read explicitly
+declared, committed `data/kb` Markdown/text documents and prepare an editable
+development draft. Every case names its cell of the basket (`coverage`: a Spec
+job × a difficulty, with the user's behaviour and the world state when they
+matter) and its `source`; the host verifies a cited document, import row or
+feedback mark and refuses a forged one. Before publishing, the judge can read
+the cases as a critic — solvable from their source, unambiguous criteria, no
+contradictions, never how the agent scored — and an invalid case is repaired or
+excluded with a stated reason. Undocumented business rules remain questions.
 
-The result shows scores, pass rates, paired intervals, Target cost, latency and
-observed tradeoffs. A recommendation requires at least 15 cases and two repeats,
-complete results and a lower confidence bound within the declared tolerance.
-Unknown prices remain unknown. These are exploratory results on the selected
-development cases: intervals are not adjusted for choosing among alternatives,
-and a recommendation does not prove performance on new tasks. Judge and simulated
-user costs are identified separately when those models were used.
+New Builder-authored drafts record a host-captured fingerprint of the declared,
+committed KB directories. Publication and `/test` compare it again before and
+after confirmation, including publication recovery. If KB content or scope has
+changed, reread it and create a new reviewed draft; editing or renaming the old
+draft preserves its original binding. Evaluator-only commits do not invalidate
+an unchanged KB. Older/imported drafts without this binding stay readable and
+show **source freshness unknown** when a KB is present. This guards draft
+publication, not the semantics of references or already-published benchmarks.
 
-Choosing an alternative opens its exact configuration diff. Accepting commits only
-the model change; old-model evidence cannot remain the active baseline. The next
-ordinary test establishes a new baseline. This changes the working configuration,
-without creating a promoted release or reusing the experiment as release evidence.
-Applying a selected model requires Git's `reference-transaction` hook; AHDE probes
-support without changing refs and refuses the change if the hook is unavailable.
-Command Targets are excluded because AHDE cannot attest which model a separate
-process actually used.
-
-Before/after Evidence now also offers **behavior replay**: independently step through
-the same case and repetition on both versions, inspect executed tools and checks,
-and share a link to those exact steps. A changed transcript entry is an observation,
-not proof of causality; the aggregate comparison remains visible beside the replay.
+Cases can contain a single `input`, a fixed `messages` history, or a reactive
+`simulatedUser`. In reactive cases, `knownFacts` describes what the person knows;
+`persona` describes behavior, and `world.state` remains hidden tool/backend state.
+The first message is fixed; the user model generates later messages from actual
+agent replies. `stopWhen` ends the conversation, but graders and `world.expect`
+decide success independently. This is model-generated behavior, not a guarantee
+of realistic users or an improvement over scripted testing. The
+[Python starter](templates/python-agent/README.md) includes concrete examples.
 
 Opening `ahde` again continues this project's latest conversation and reads fresh
 project state before the next turn. `ahde builder-pi` explicitly starts a new
 conversation; `ahde resume` opens the history picker. A restart preserves recorded
 work without restoring old confirmations or silently restarting model spend.
+Before each new turn the Builder also receives bounded, evidence-linked memory
+of prior attempts: the proposed change, measurement and operator decision.
+Rejected does not mean ineffective, and an inconclusive result does not mean
+failure. History is orientation, not permission to reuse stale evidence.
 
 Natural requests and command shortcuts share the same running task, progress,
 stop and result. Ask for the passport, exported dataset, judge labeling or a
@@ -124,8 +134,13 @@ the configured threshold.
 
 Opening a detected agent folder presents one editable setup review: the command,
 the files AHDE may change, and the effect of accepting. After a development run,
-the conversation shows the result, up to three problems, and an evidence link;
-full traces remain available on request. The Builder is instructed to prepare
+the conversation shows the result, up to three problems, and a case table;
+full traces remain available on request. Use `/traces next` / `/traces prev`
+to page runs, and `/trace 73` to open an absolute row. Candidate comparison pages
+use `/review next` / `/review prev`, without triggering an apply or release.
+The live grid counts observed public phases; the planned execution budget is
+separate because private exams and reused baselines emit no public trace events.
+The Builder is instructed to prepare
 one actionable change for review without waiting for “fix the first problem”.
 This is a prepared diff, not an automatic apply or ship.
 
@@ -198,10 +213,14 @@ network/filesystem/process capabilities, generates the descriptor, executable,
 input/output schemas, fixtures and contract manifest, then runs both successful
 and error-handling fixtures until the exact package is green. Every
 consequential step is a host-owned question with the exact subject on screen.
-Money is asked once per cycle: the apply question shows the verification
-estimate and approves it; verify asks again only above 1.5× that amount or when
-nothing was authorized. Give the Builder a Sonnet/Opus-class model — below that
-floor the loop does not close; the Target can be as small as a 9B model.
+Money is asked once per cycle: the apply question shows the check's estimate
+and approves it; a check asks again only above 1.5× that amount or when nothing
+was authorized, and ship asks for the exam. Give the Builder a Sonnet/Opus-class model — below that
+floor the loop does not close; the Target can be as small as a 9B model. On
+OpenRouter, Anthropic models are routed through chat completions by AHDE's own
+`models.json` in the Builder home (Pi's catalog would send them to a URL
+OpenRouter answers with a 404); the override is derived from the catalog at
+each launch and takes effect from the second one.
 
 For “improve it automatically”, Builder Pi searches independent hypotheses
 through the existing `improve` action. It keeps the best measured change across
@@ -235,9 +254,8 @@ latency, then the earlier trial. No verified improvement means keep the original
 The selected diff is reviewed once at the end; explicit `selection: review`
 retains the earlier manual choice mode.
 The evaluator-only sealed exam still answers the separate release question, so
-validation does not automatically prove the best production agent. The standalone `ahde improve` command still consumes recorded proposals
-unless its host attaches an author; automatic authoring uses the live Builder
-Pi model. Integration tests cover this path with scripted local models; this
+validation does not automatically prove the best production agent. Automatic
+authoring uses the live Builder Pi model. Integration tests cover this path with scripted local models; this
 automatic-author path has also completed a paid synthetic support pilot with
 Claude Sonnet 4.6 writing two hypotheses and Qwen 3.5 9B running the agent.
 The operator driver approved the Spec, selected the independently measured
@@ -397,13 +415,14 @@ answer`). It never prints chunk text. Semantic faithfulness remains explicitly
 ## What the engine guarantees
 
 1. **The Builder cannot read the sealed exam** — reserved at ingest before the Builder sees the data, or written by the judge model from the Spec; the engine prints counts, design size and verdict, not content.
-2. **Nothing ships without evidence and a human** — promotion needs a development verdict that is not `regressed`, a sealed `pass` on ≥15 tasks × ≥2 reps, an applied proposal with its receipt, and a person confirming the exact subject on screen.
+2. **Nothing ships without evidence and a human** — promotion needs a development verdict that is not `regressed`, a sealed `pass` on ≥15 tasks × ≥2 reps, every regression guard kept (no development case the base passed in every repetition may fail in every repetition), an applied proposal with its receipt, and a person confirming the exact subject on screen.
 3. **Every number traces to an immutable artifact** — verdicts come from hash-pinned snapshots under a named gate policy; promotion rehashes the chain.
 4. **The agent runs only declared tools, sandboxed** — descriptors and executable bytes are Target identity and must rehash before reuse; missing confinement is not promotable.
 5. **The builder edits only a branch** — a proposal touches `AGENTS.md`, the manifest's declared lists, `skills/**`, `tools/**`, `bin/**`, `data/**` and nothing else; main moves only by `promote` + `adopt`.
+6. **A case is never dropped for failing** — after a run the basket is read, not pruned: a case the agent passes every time becomes a regression check, a case it fails every time is capability work until the critic finds a fault in the test itself, and only an invalid test is repaired or excluded, with its reason on record. Synthetic and real cases are compared only in the same cell; the simulator's realism is unverified until real dialogues exist.
 
-[docs/INVARIANTS_V1.md](docs/INVARIANTS_V1.md) is the exhaustive 42-invariant
-statement behind these five; [docs/ROADMAP.md](docs/ROADMAP.md) is what comes
+[docs/INVARIANTS_V1.md](docs/INVARIANTS_V1.md) is the exhaustive 47-invariant
+statement behind these six; [docs/ROADMAP.md](docs/ROADMAP.md) is what comes
 next.
 
 ## Vocabulary
@@ -433,6 +452,10 @@ next.
 - **Promotion** — the human decision tagging the evaluated candidate revision.
   **Adoption** — the human-confirmed fast-forward of the operator's branch onto
   it. Only adoption moves the active Target. `ship` does both.
+- **Regression guard** — a development case the base passed in every
+  repetition: the suite of what the agent already handles. A candidate that
+  fails one in every repetition cannot ship, whatever the average says; the
+  cases a capability basket saturates graduate into it on their own.
 - **A/A calibration** — the same revision evaluated twice to measure noise.
   Never promotion evidence. **Screen** — the cheap check: previously failing
   cases, once, candidate arm only; refused as evidence.
@@ -447,37 +470,39 @@ next.
 - **Re-score** — the recorded answers graded again under revised graders: no
   agent call, only the judge, never a new baseline; at candidate review both
   arms are re-scored together.
+- **Coverage cell** — a Spec job × a difficulty (`direct`, `clarify`, `tool`,
+  `policy-trap`, `out-of-scope`, `no-answer`), optionally the user's behaviour
+  preset and the world state. The basket is read as this matrix; the next wave
+  fills its empty cells and goes harder where every case saturated.
+- **Critic** — the judge reading the cases, never the agent: solvable from the
+  cited source, world and declared tools; unambiguous criteria; no
+  contradictions; checks that match the source. Verdicts `valid`, `repair`
+  (with a fix), `invalid` (with reasons), `unreviewed`. Judge spend only.
+- **Basket reading** — after a run, each case's standing (`saturated`,
+  `failing`, `unstable`), the critic's validity, its origin (real or
+  synthetic) and its cell. Nothing is removed; a failing valid case is work on
+  the agent.
+- **Simulator noise** — the same revision against itself with a second user
+  model (`evalSuite.simulatedUserAlternate`) on the other arm; the band is
+  about the user model. Never promotion evidence.
 
 ## Commands
 
-The CLI is the machine surface: CI, scripts, a platform behind `serve`. All
-take `--target <dir>` (`corpus`: `--project <id>`).
+Eight commands, and nothing the conversation already does:
 
 ```text
-init <dir> [--template <name|dir>]  scaffold a harness + commit
-validate                     readiness; no model calls
-corpus inspect|ingest|import|synth|list  the benchmark; sealed at ingest
-run --repetitions 3          development evidence
-diagnose · report <erun>     what happened, and why
-regrade <erun>               re-score traces, no model calls
-calibrate                    the A/A noise band
-label <erun>                 grade the judge blind (--file for CI)
-check --candidate <id>       the failed cases, before the bill
-candidate --builder-run <id>  matched comparison + sealed gate
-review · promote --to 0.X.0  the human gate
-passport [--out <md>]        promised vs measured
-log                          versions × score × cost
-watch --every 1d             drift vs noise, once shipped
-tool try --tool <n>          one declared tool, sandboxed
-tool try --tool <n> --fixtures  its own contract, per fixture
-serve [--port N]             the engine behind a loopback API
+ahde                         open this agent's Builder conversation (continues the last one)
+ahde builder-pi              start a new conversation · ahde continue / ahde resume pick one
+ahde target                  talk to the built agent; /good and /bad mark its replies
+ahde init <dir> [--template python-support|pi-support|pi-basic]
+ahde validate --target <dir> readiness without a model call
+ahde run --target <dir>      the development basket once, no Builder needed
+ahde evidence [--port N]     the read-only trace explorer
 ```
 
-`ahde <command> --help` has the rest (`list`, `feedback`, `improve`, `search`,
-`reject`). `serve` lets a platform drive the loop in its own UI: a
-consequential decision opens a pending confirmation bound to the subject hash
-the engine minted, and blocks until the platform answers that id with that
-hash. A transport for the human gate, never an exemption.
+Tests, diagnosis, changes, checks, the exam, the release and its passport are
+asked for in the conversation and confirmed on screen. Scripts drive the same
+engine through the library (`scripts/demo.mjs` is the worked example).
 
 ## Templates
 
@@ -519,8 +544,7 @@ files are named, with the reason each is heavy, at the top of
 `vitest.config.ts`.
 
 CI defines macOS and Linux checks. The Linux lane requires a working bwrap
-sandbox and Docker; setting `AHDE_REQUIRE_DOCKER_TESTS=1` makes missing Docker
-integration prerequisites a failure rather than a skipped acceptance check.
+sandbox.
 
 The free demo uses a scripted local model with the real runner and knowledge
 search. It leaves a release report, a RAG X-ray page, a passport, and an exported
@@ -530,5 +554,5 @@ and repeatability; they do not measure the quality of a live model.
 ## Deliberately out of scope
 
 RL or weight changes · autonomous promotion or deployment · a hosted multi-user
-service · Windows. Studio is a local companion to the same Builder, and `serve`
+service · Windows. Studio is a local companion to the same Builder, and the CLI
 remains the integration boundary for other platforms.

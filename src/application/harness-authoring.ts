@@ -12,12 +12,10 @@ import {
 	type ProposalPredictionInput,
 } from "../builder/proposal-contract.js";
 import {
-	ContainerBlock,
 	ExecutionPolicyBlock,
 	harnessFilesOf,
 	loadTarget,
 	TargetManifest,
-	type ContainerBlock as ContainerPolicy,
 	type ExecutionPolicyBlock as ExecutionPolicy,
 	type TargetManifest as TargetManifestValue,
 } from "../manifest.js";
@@ -154,19 +152,9 @@ const InstructionsReplaceIntentSchema = z.strictObject({
 	content: AuthoredTextSchema,
 });
 
-const ContainerChangeSchema = z.discriminatedUnion("action", [
-	z.strictObject({
-		action: z.literal("replace"),
-		/** The complete non-secret container policy that will replace the current one. */
-		value: ContainerBlock,
-	}),
-	z.strictObject({ action: z.literal("remove") }),
-]);
-
 /**
  * Patch the execution policy without making the Builder repeat authority it
- * did not intend to change. In particular, an omitted `container` key means
- * preserve the exact manifest node; replacement and removal are explicit.
+ * did not intend to change: an omitted key preserves the exact manifest node.
  */
 const ExecutionPolicyPatchSchema = z.strictObject({
 	tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).optional(),
@@ -175,7 +163,6 @@ const ExecutionPolicyPatchSchema = z.strictObject({
 		.optional(),
 	network: z.enum(["deny", "allow"]).optional(),
 	sandbox: z.enum(["required", "best-effort", "off"]).optional(),
-	container: ContainerChangeSchema.optional(),
 }).superRefine((patch, context) => {
 	if (Object.keys(patch).length === 0) {
 		context.addIssue({ code: "custom", message: "execution.configure must name at least one policy change" });
@@ -185,7 +172,7 @@ export type HarnessExecutionPolicyPatch = z.infer<typeof ExecutionPolicyPatchSch
 
 const ExecutionConfigureIntentSchema = z.strictObject({
 	type: z.literal("execution.configure"),
-	/** Patch semantics. Omitted fields, especially `container`, are preserved. */
+	/** Patch semantics. Omitted fields are preserved. */
 	execution: ExecutionPolicyPatchSchema,
 });
 
@@ -574,7 +561,7 @@ export function renderManifest(
 		// A legacy manifest may have relied on the top-level execution default. In
 		// that case there is no exact YAML subtree to preserve, so materialize the
 		// complete validated policy once. Otherwise mutate only the named leaves:
-		// YAML keeps the untouched container node (including comments, ordering and
+		// YAML keeps every untouched node (including comments, ordering and
 		// scalar spelling) byte-for-byte.
 		if (!document.has("execution")) {
 			document.set("execution", policy);
@@ -585,10 +572,6 @@ export function renderManifest(
 			}
 			if (patch.network !== undefined) document.setIn(["execution", "network"], policy.network);
 			if (patch.sandbox !== undefined) document.setIn(["execution", "sandbox"], policy.sandbox);
-			if (patch.container?.action === "remove") document.deleteIn(["execution", "container"]);
-			if (patch.container?.action === "replace") {
-				document.setIn(["execution", "container"], policy.container);
-			}
 		}
 	}
 	const rendered = String(document);
@@ -618,7 +601,6 @@ function applyExecutionPolicyPatch(
 		environmentAllowlist: string[];
 		network: ExecutionPolicy["network"];
 		sandbox: ExecutionPolicy["sandbox"];
-		container?: ContainerPolicy;
 	} = {
 		tools: patch.tools === undefined ? [...base.tools] : [...patch.tools],
 		environmentAllowlist: patch.environmentAllowlist === undefined
@@ -626,10 +608,7 @@ function applyExecutionPolicyPatch(
 			: [...patch.environmentAllowlist],
 		network: patch.network ?? base.network,
 		sandbox: patch.sandbox ?? base.sandbox,
-		...(base.container ? { container: { ...base.container } } : {}),
 	};
-	if (patch.container?.action === "remove") delete candidate.container;
-	if (patch.container?.action === "replace") candidate.container = { ...patch.container.value };
 	return ExecutionPolicyBlock.parse(candidate);
 }
 
@@ -944,7 +923,6 @@ export function compileHarnessAuthoringProposal(
 			environmentAllowlist: [...execution.environmentAllowlist],
 			network: execution.network,
 			sandbox: execution.sandbox,
-			...(execution.container ? { container: { ...execution.container } } : {}),
 		},
 	};
 	const resultingResourceList = [...resultingResources.values()] as TargetAuthoringResource[];

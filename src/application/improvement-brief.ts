@@ -338,6 +338,7 @@ const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"required-tool": "Required tool check failed",
 	"output-contains": "Output contract check failed",
 	"output-matches": "Output contract check failed",
+	"output-excludes": "The answer said something it must not",
 	"no-secret": "The answer leaked something shaped like a credential",
 	"reference-exact": "Exact reference-answer check failed",
 	"semantic-rubric": "Semantic rubric check failed",

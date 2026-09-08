@@ -171,8 +171,11 @@ describe("model-facing projection", () => {
 			when: expect.any(String),
 		});
 		expect(next.decide.map((entry) => entry.kind)).toEqual([
-			"run-current", "talk-to-agent", "regrade", "generate-holdout",
-			"configure-evaluators", "calibrate", "model-experiment", "accept-model", "improve", "run-eval",
+			// The critic is offered here because a published basket exists to doubt:
+			// a case that keeps failing is read for its own validity before anything
+			// is blamed on the agent.
+			"run-current", "talk-to-agent", "regrade", "critique-corpus", "generate-holdout",
+			"configure-evaluators", "calibrate", "improve", "run-eval",
 		]);
 		// A workshop is open, so closing or discarding it is legal and reopening is not.
 		expect(next.submit.map((entry) => entry.kind)).toEqual([

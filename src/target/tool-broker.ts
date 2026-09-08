@@ -4,25 +4,17 @@ import { basename, dirname, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
 import { redactSensitiveText } from "../trace.js";
 import {
-	dockerInvocation,
-	resolveExecutionBackend,
-	type ContainerPolicy,
-	type ContainerRuntimeBinding,
-} from "./container-backend.js";
-import {
 	resolveStrictTargetFile,
 	type ResolvedTargetTool,
-	type TargetToolPolicyEnvelope,
 	validateTargetToolArguments,
 } from "./tool-manifest.js";
 import { decodeUtf8, executableOnPath } from "../util.js";
 
-export type TargetToolSandboxBackend = "sandbox-exec" | "bwrap" | "container";
+export type TargetToolSandboxBackend = "sandbox-exec" | "bwrap";
 
 export interface TargetToolBrokerOptions {
 	workspaceDir: string;
 	scratchDir: string;
-	policy: TargetToolPolicyEnvelope;
 	sourceEnvironment?: NodeJS.ProcessEnv;
 	/**
 	 * Prepared home for multi-file tools: `<root>/<tool name>/…`. Directory
@@ -37,8 +29,6 @@ export interface TargetToolBrokerOptions {
 	worldPath?: string;
 	/** Production callers should omit this. Tests may inject a previously probed backend. */
 	sandboxBackend?: TargetToolSandboxBackend;
-	/** Exact runtime capability returned with a container backend decision. */
-	containerRuntime?: ContainerRuntimeBinding;
 	/** Optional caps for unreviewed authoring processes; normal Target calls omit them. */
 	resourceLimits?: SandboxResourceLimits;
 }
@@ -322,62 +312,15 @@ export function sandboxInvocation(options: {
 	confinement: TargetToolConfinement;
 	cwd: string;
 	argv: readonly string[];
-	/** Required when `backend` is "container"; selects the container runtime and image. */
-	container?: ContainerPolicy;
-	/** Prepared multi-file tool home to mount at /tools, and whether that mount is writable. */
-	toolHomeRoot?: string;
-	toolHomeMode?: "ro" | "rw";
-	/**
-	 * The world directory to mount at /world. The OS backends read it off
-	 * `confinement`; a container names its mounts explicitly, so it is passed
-	 * here too, and `AHDE_WORLD` is rewritten to its container spelling.
-	 */
-	worldDir?: string;
-	hostEnvironment?: NodeJS.ProcessEnv;
-	containerRuntime?: ContainerRuntimeBinding;
-	lifecycleTimeoutMs?: number;
 	/** Optional `ulimit` caps applied inside the sandbox; omitted leaves them at the host's. */
 	limits?: SandboxResourceLimits;
 }): {
 	executable: string;
 	args: string[];
-	spawnEnvironment?: NodeJS.ProcessEnv;
-	assertReady?: () => void;
-	terminate?: () => void;
-	dispose?: () => void;
 	limits: AppliedResourceLimits | null;
 } {
 	const capped = options.limits ? applyResourceLimits(options.backend, options.argv, options.limits) : null;
 	const argv = capped ? capped.argv : options.argv;
-	if (options.backend === "container") {
-		if (!options.container) throw new Error("container backend requires an execution.container policy");
-		const invocation = dockerInvocation({
-			policy: options.container,
-			mounts: {
-				workspaceDir: options.workspaceDir,
-				workspaceMode: options.confinement.writeRoots.includes(options.workspaceDir) ? "rw" : "ro",
-				scratchDir: options.scratchDir,
-				...(options.toolHomeRoot ? { toolHomeRoot: options.toolHomeRoot } : {}),
-				...(options.toolHomeMode ? { toolHomeMode: options.toolHomeMode } : {}),
-				...(options.worldDir
-					? {
-						worldDir: options.worldDir,
-						worldMode: options.confinement.writeRoots.includes(options.worldDir)
-							? "rw" as const
-							: "ro" as const,
-					}
-					: {}),
-			},
-			network: options.confinement.network,
-			environment: options.environment,
-			cwd: options.cwd,
-			argv,
-			...(options.hostEnvironment ? { hostEnvironment: options.hostEnvironment } : {}),
-			...(options.containerRuntime ? { runtimeBinding: options.containerRuntime } : {}),
-			...(options.lifecycleTimeoutMs !== undefined ? { lifecycleTimeoutMs: options.lifecycleTimeoutMs } : {}),
-		});
-		return { ...invocation, limits: capped?.applied ?? null };
-	}
 	if (options.backend === "sandbox-exec") {
 		const [command, ...rest] = argv;
 		if (!command) throw new Error("sandboxed invocation requires a command");
@@ -520,7 +463,6 @@ export class TargetToolBroker {
 	readonly sandboxBackend: TargetToolSandboxBackend;
 	private readonly toolHomeRoot: string | undefined;
 	private readonly worldDir: string | undefined;
-	private readonly containerRuntime: ContainerRuntimeBinding | undefined;
 
 	constructor(private readonly options: TargetToolBrokerOptions) {
 		this.options.workspaceDir = realWorkspace(options.workspaceDir);
@@ -539,14 +481,8 @@ export class TargetToolBroker {
 		} else {
 			this.worldDir = undefined;
 		}
-		const choice = options.sandboxBackend === undefined
-			? resolveExecutionBackend({
-				policy: options.policy,
-				osBackend: () => detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir),
-			})
-			: undefined;
-		this.sandboxBackend = options.sandboxBackend ?? choice?.backend ?? detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir);
-		this.containerRuntime = options.containerRuntime ?? choice?.containerRuntime;
+		this.sandboxBackend = options.sandboxBackend
+			?? detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir);
 	}
 
 	effectiveEnvironmentNames(tool: ResolvedTargetTool): string[] {
@@ -610,22 +546,13 @@ export class TargetToolBroker {
 			confinement: toolConfinement(tool, this.options.workspaceDir, this.toolHomeRoot, this.worldDir),
 			cwd: this.options.workspaceDir,
 			argv: [executable, ...tool.descriptor.command.argv.slice(1)],
-			...(this.options.policy.container ? { container: this.options.policy.container } : {}),
-			...(this.containerRuntime ? { containerRuntime: this.containerRuntime } : {}),
-			...(this.toolHomeRoot ? { toolHomeRoot: this.toolHomeRoot } : {}),
-			...(this.worldDir ? { worldDir: this.worldDir } : {}),
 			...(this.options.resourceLimits ? { limits: this.options.resourceLimits } : {}),
-			lifecycleTimeoutMs: tool.descriptor.timeoutMs,
 		});
-		command.assertReady?.();
 		const startedMs = Date.now();
 		const child = spawn(command.executable, command.args, {
 			cwd: this.options.workspaceDir,
 			detached: process.platform !== "win32",
-			// The container runtime CLI is a host process and needs the host's own
-			// PATH and daemon variables; the container's environment travels in the
-			// a private env-file referenced by `command.args`, never here.
-			env: command.spawnEnvironment ?? environment,
+			env: environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -663,17 +590,10 @@ export class TargetToolBroker {
 
 		try {
 			child.stdin.end(input);
-			let exitCode: number | null;
-			try {
-				exitCode = await new Promise<number | null>((resolveExit, reject) => {
-					child.once("error", reject);
-					child.once("close", resolveExit);
-				});
-			} finally {
-				// The daemon cleanup must happen only after the runtime client is
-				// dead; otherwise `rm` can race a still-in-flight container create.
-				if (stopped) command.terminate?.();
-			}
+			const exitCode = await new Promise<number | null>((resolveExit, reject) => {
+				child.once("error", reject);
+				child.once("close", resolveExit);
+			});
 			if (stopped === "aborted" || signal?.aborted) throw new Error(`Target tool ${tool.descriptor.name} aborted`);
 			if (stdinError) throw new Error(`Target tool ${tool.descriptor.name} could not read JSON input`, { cause: stdinError });
 			return {
@@ -695,7 +615,6 @@ export class TargetToolBroker {
 		} finally {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", abort);
-			command.dispose?.();
 		}
 	}
 

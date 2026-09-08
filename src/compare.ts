@@ -1,5 +1,5 @@
 import { interval, percent } from "./measurement.js";
-import { AHDE_EVALUATOR_ID, axisDifferences, hasKnownCommandUsageSemantics } from "./provenance.js";
+import { AHDE_EVALUATOR_ID, axisDifferences, axisLabel, hasKnownCommandUsageSemantics } from "./provenance.js";
 import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "./eval.js";
 import type { RunRecord, TokenMetrics } from "./provenance.js";
 import type { ExperimentMode } from "./domain/candidate.js";
@@ -54,6 +54,23 @@ export interface CompareResult {
 	error: string | null;
 }
 
+/**
+ * An axis an A/A design may deliberately move. Exactly one so far: the model
+ * that plays the user, whose noise is measurable only by changing it and
+ * holding everything else — revision, cases, judge, execution — fixed.
+ */
+export type AllowedCompareAxis = "simulatedUser";
+
+/**
+ * The provenance labels those axes carry. `axisDifferences` reports labels, and
+ * the table that maps a key to its label is private to `provenance.ts`; this is
+ * the one entry we need, spelled out so a rename there fails a test here rather
+ * than silently allowing nothing.
+ */
+const ALLOWED_AXIS_LABELS: Record<AllowedCompareAxis, string> = {
+	simulatedUser: axisLabel("simulatedUser"),
+};
+
 export interface CompareOptions {
 	/** `exploratory` skips candidate linkage rules; never promotion-grade. */
 	mode: ExperimentMode | "exploratory";
@@ -63,6 +80,13 @@ export interface CompareOptions {
 	surface?: GateSurface;
 	/** Bootstrap resamples; tests may lower it. */
 	resamples?: number;
+	/**
+	 * Axes the caller is deliberately measuring, so a difference on them is the
+	 * design rather than a broken comparison. Honoured only for `aa-calibration`
+	 * — one revision against itself, which is never shipping evidence — and only
+	 * for the named axis: everything else stays strict.
+	 */
+	allowAxes?: readonly AllowedCompareAxis[];
 }
 
 /**
@@ -261,13 +285,17 @@ export function compareVerifiedEvalRuns(
 			if (record.purpose !== "evidence") {
 				invalid.push(record.purpose === "screen"
 					? `${role} eval ${record.evalRunId} is a cheap-check screen, which is never evidence`
-					: record.purpose === "model-experiment"
-					? `${role} eval ${record.evalRunId} is a model experiment, never promotion evidence`
 					: `${role} eval ${record.evalRunId} predates first-class run purpose and is ambiguous one-arm evidence; rerun it`);
 			}
 		}
 	}
-	const diffs = axisDifferences(a.provenance, b.provenance);
+	// An A/A pair may be asked to move exactly one declared axis; every other
+	// axis, and every other mode, keeps the strict rule that a difference the
+	// caller did not design is a reason not to compare at all.
+	const designed = mode === "aa-calibration"
+		? (options.allowAxes ?? []).map((axis) => ALLOWED_AXIS_LABELS[axis])
+		: [];
+	const diffs = axisDifferences(a.provenance, b.provenance).filter((axis) => !designed.includes(axis));
 	if (diffs.length > 0) invalid.push(`differing axes: ${diffs.join(", ")}`);
 	if (a.target.id !== b.target.id) invalid.push(`different targets: ${a.target.id} vs ${b.target.id}`);
 	if (a.repetitions !== b.repetitions) invalid.push(`different repetitions: ${a.repetitions} vs ${b.repetitions}`);

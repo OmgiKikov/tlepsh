@@ -1,5 +1,7 @@
 import type {
 	WorkbenchCandidateSummary,
+	WorkbenchCoverageProjection,
+	WorkbenchCriticProjection,
 	WorkbenchDatasetCase,
 	WorkbenchDatasetDetail,
 	WorkbenchGateProjection,
@@ -14,6 +16,7 @@ import type {
 } from "../../workbench/types.js";
 import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
 import type { TargetAuthoringResource } from "../../application/target-authoring-context.js";
+import { CASE_DIFFICULTIES, coverageCellLabel } from "../../domain/case-coverage.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { resolveWorldPath } from "../../domain/world.js";
 import { candidateStatusLabel, hasMessage, type MessageKey, plural, t, verdictLabel } from "../../i18n.js";
@@ -23,11 +26,15 @@ import { recommendedRepetitions } from "../../workbench/calibration.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { renderRunInspection } from "./run-inspection.js";
-import { renderModelExperiments } from "./model-experiment.js";
+import { DEFAULT_TRACE_TABLE_ROWS, renderRunsTable } from "./trace.js";
+import type { RunRow } from "../../application/run-explanation.js";
+import type { WorkbenchCandidateCase } from "../../workbench/candidate-cases.js";
+import type { EvalPageMode } from "../../evidence/pages.js";
 import {
 	bar,
 	bullets,
 	bytes,
+	caseLabel,
 	caseTitle,
 	clean,
 	examShortfall,
@@ -42,6 +49,10 @@ import {
 	shortHash,
 	shortSha,
 	shortTaskId,
+	table,
+	type TableCell,
+	type TableColumn,
+	type Tone,
 	when,
 	wrap,
 } from "./format.js";
@@ -57,8 +68,9 @@ import {
 import { measurementOf } from "../../application/prediction.js";
 import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import type { Paint } from "./paint.js";
-import { planProgress, type Plan } from "./plan.js";
-import { nextStep, stageLabel, stageNextStep } from "./stage.js";
+import { planProgress, planStrip, type Plan } from "./plan.js";
+import { nextStep, stageLabel, stageLabelOf, stageNextStep } from "./stage.js";
+import { renderBasket } from "./basket.js";
 
 export interface RenderReviewOptions {
 	maxDiffLines?: number;
@@ -246,7 +258,7 @@ export function renderStatus(view: WorkbenchView, paint: Paint, options: RenderS
 	const lines = [
 		...(options.heading === false
 			? []
-			: [`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`]),
+			: [`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabelOf(view))}`]),
 		targetLine(view, paint),
 		...(evaluators ? [evaluators] : []),
 		...(evidence ? [evidence] : []),
@@ -308,6 +320,9 @@ function headerJudgeLine(state: HeaderState, paint: Paint): string | null {
 }
 
 /** Persistent header: identity, live stage, next step, evidence, and readiness. */
+/** Steps done before the header trades its `step n of m` for the checklist. */
+const PLAN_STRIP_FROM = 2;
+
 export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const builder = state.builderModel.label
 		? `${state.builderModel.label} ${state.builderModel.credentialPresent ? paint.success("✓") : paint.warning(t("header.not-connected-suffix"))}`
@@ -350,11 +365,15 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const unknowable = view.stage === "target-setup" && view.target.status === "missing";
 	if (!duplicated && !unknowable) {
 		const progress = state.plan ? planProgress(state.plan) : null;
+		// Once the cycle is under way the steps are drawn as a checklist on their
+		// own line; a first screen keeps the count and stays four lines.
+		const strip = state.plan && progress && progress.done >= PLAN_STRIP_FROM ? planStrip(state.plan, paint) : null;
 		lines.push(joinNonEmpty([
-			`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))}`,
-			progress ? paint.dim(t("plan.progress", { done: progress.done, total: progress.total })) : null,
+			`${paint.dim(t("label.stage"))} ${paint.bold(stageLabelOf(view))}`,
+			progress && !strip ? paint.dim(t("plan.progress", { done: progress.done, total: progress.total })) : null,
 			`${paint.dim(t("label.next"))} ${next}`,
 		], ` ${paint.dim("·")} `));
+		if (strip) lines.push(strip);
 	}
 	const evidence = evidenceLine(view, paint);
 	lines.push(joinNonEmpty([evidence, `${paint.dim(t("label.builder-model"))} ${builder}`], ` ${paint.dim("·")} `));
@@ -450,6 +469,56 @@ function judgeAgreementLine(
 	return `${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: percent(calibration.agreement) })} ${paint.dim("·")} ${kappa(calibration.kappa)} ${paint.dim(`· n=${calibration.labels}`)}`;
 }
 
+/** Rows a candidate panel shows before it points at the Explorer. */
+const DEFAULT_CANDIDATE_CASE_ROWS = 12;
+
+/**
+ * The comparison case by case: what the case scored before, what it scores
+ * now, and the paired delta the gate summed — regressions first, because a
+ * `+25 pts` headline over a case that went from 100% to 0% is the one thing a
+ * reviewer must not be allowed to miss.
+ */
+export function renderCandidateCases(
+	cases: readonly WorkbenchCandidateCase[],
+	paint: Paint,
+	options: { limit?: number; total?: number; offset?: number } = {},
+): string[] {
+	if (cases.length === 0) return [];
+	const limit = Math.max(1, options.limit ?? DEFAULT_CANDIDATE_CASE_ROWS);
+	const shown = cases.slice(0, limit);
+	const offset = options.offset ?? 0;
+	const total = options.total ?? offset + cases.length;
+	const repeated = cases.some((entry) => entry.baseline.total > 1 || entry.candidate.total > 1);
+	const noted = cases.some((entry) => entry.exclusion !== null);
+	const arm = (side: WorkbenchCandidateCase["baseline"]): string =>
+		repeated ? `${side.pass}/${side.total} · ${percent(side.score)}` : percent(side.score);
+	const columns: TableColumn[] = [
+		{ header: t("table.col.task"), min: 16, max: 44, flex: true },
+		{ header: t("table.col.baseline"), align: "right" },
+		{ header: t("table.col.candidate"), align: "right" },
+		{ header: t("table.col.delta"), align: "right" },
+		...(noted ? [{ header: t("table.col.note"), min: 12, max: 34, flex: true }] : []),
+	];
+	const rows = shown.map((entry): TableCell[] => {
+		const tone: Tone = entry.exclusion ? "muted" : entry.scoreDelta > 0 ? "success" : entry.scoreDelta < 0 ? "error" : "muted";
+		const glyph = entry.exclusion ? "·" : entry.scoreDelta > 0 ? "↑" : entry.scoreDelta < 0 ? "↓" : "=";
+		return [
+			{ text: caseLabel(entry.taskId, entry.input), ...(entry.exclusion ? { tone: "muted" as const } : {}) },
+			{ text: arm(entry.baseline) },
+			{ text: arm(entry.candidate) },
+			{ text: `${glyph} ${entry.exclusion ? "—" : points(entry.scoreDelta)}`, tone },
+			...(noted
+				? [{ text: entry.exclusion ? t(`table.excluded-${entry.exclusion}`) : "", tone: "muted" as const }]
+				: []),
+		];
+	});
+	const lines = [paint.dim(t("candidate.by-case")), ...table(columns, rows, paint)];
+	if (total > shown.length) lines.push(paint.dim(t("table.cases-page", { start: offset + 1, end: offset + shown.length, total })));
+	if (offset > 0) lines.push(paint.dim(t("table.cases-prev")));
+	if (total > offset + shown.length) lines.push(paint.dim(t("table.cases-more", { n: total - offset - shown.length })));
+	return lines;
+}
+
 export function renderCandidate(
 	candidate: WorkbenchCandidateSummary & {
 		proposal?: WorkbenchProposalReview | null;
@@ -493,6 +562,22 @@ export function renderCandidate(
 	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
 	else if (candidate.development) lines.push(`${paint.dim(t("label.development"))} ${paint.muted(t("candidate.not-reconstructable"))}`);
 	else lines.push(`${paint.dim(t("label.development"))} ${paint.muted(t("candidate.not-evaluated"))}`);
+	// The regression suite, beside the verdict it can veto: what the base passed
+	// every time is named here whether it held or not, because "better on
+	// average" and "un-fixed two cases" are both true of the same candidate.
+	const guards = candidate.development?.regressionGuards;
+	if (guards) {
+		const label = (taskId: string) => {
+			const known = candidate.cases?.find((entry) => entry.taskId === taskId);
+			return known ? caseLabel(known.taskId, known.input) : oneLine(taskId, 40);
+		};
+		lines.push(`${paint.dim(t("label.regression-guards"))} ${guards.broken.length > 0
+			? `${paint.error(t("guards.broken", { broken: guards.broken.length, guarded: plural(guards.guarded, "case") }))} ${paint.dim("·")} ${oneLine(guards.broken.slice(0, 3).map(label).join(", "), 120)}${guards.broken.length > 3 ? paint.dim(` +${guards.broken.length - 3}`) : ""}`
+			: paint.success(t("guards.kept", { guarded: plural(guards.guarded, "case") }))}`);
+	}
+	if (candidate.cases && candidate.cases.length > 0) lines.push(...renderCandidateCases(candidate.cases, paint, {
+		total: candidate.casesTotal, offset: candidate.casesOffset,
+	}));
 	// The rubric moved after this candidate was decided, and both arms were
 	// re-scored under it. One extra line, never a rewrite of the verdict above.
 	if (candidate.regraded && candidate.development?.comparison) {
@@ -561,6 +646,7 @@ function graderLabel(grader: { type: string } & Record<string, unknown>): string
 	switch (grader.type) {
 		case "tool_called": return `tool ${String(grader.tool ?? grader.name ?? "?")}${grader.argsContains ? ` ∋ “${oneLine(String(grader.argsContains), 30)}”` : ""}`;
 		case "output_contains": return `contains “${oneLine(String(grader.text ?? ""), 30)}”`;
+		case "output_excludes": return `excludes “${oneLine(String(grader.text ?? ""), 30)}”`;
 		case "output_matches": return `matches /${oneLine(String(grader.pattern ?? ""), 30)}/`;
 		case "no_secret": return t("grader.no-secret");
 		case "judge": {
@@ -581,14 +667,67 @@ function graderLabel(grader: { type: string } & Record<string, unknown>): string
 	}
 }
 
+/** The same source status is visible on the draft and on its final confirmation. */
+export function renderCorpusSources(value: unknown, paint: Paint): string[] {
+	const status = value && typeof value === "object" && "status" in value ? value.status : null;
+	if (status !== "current" && status !== "changed" && status !== "unknown" && status !== "unavailable") return [];
+	return wrap(t(`corpus.sources.${status}`), 96).map(status === "current" ? paint.dim : paint.warning);
+}
+
+/** How many empty cells and exclusion reasons a panel names before it says “…”. */
+const COVERAGE_CELLS_SHOWN = 8;
+
+/**
+ * The basket as a matrix, next to the cases themselves.
+ *
+ * An empty cell is the cheapest defect to fix and the hardest to see in a list
+ * of cases, so the panel counts the Spec's jobs against the difficulties and
+ * names what nobody wrote yet. Origins are printed beside it because a
+ * synthetic case and a real one answer different questions.
+ */
+function renderCoverage(coverage: NonNullable<WorkbenchCoverageProjection>, paint: Paint): string[] {
+	const lines = [paint.dim(t("coverage.title"))];
+	for (const row of coverage.jobs) {
+		const cells = CASE_DIFFICULTIES.map((difficulty) => `${difficulty} ${row.byDifficulty[difficulty]}`).join(" · ");
+		const job = row.known ? oneLine(row.job, 60) : `${oneLine(row.job, 60)} (${t("coverage.unknown-job")})`;
+		lines.push(`  ${(row.total === 0 ? paint.warning : paint.dim)(t("coverage.row", { job, cells }))}`);
+	}
+	if (coverage.missing.length > 0) {
+		const shown = coverage.missing.slice(0, COVERAGE_CELLS_SHOWN).map(coverageCellLabel).join(", ");
+		const rest = coverage.missing.length - COVERAGE_CELLS_SHOWN;
+		lines.push(...wrap(t("coverage.empty", { cells: rest > 0 ? `${shown}, …+${rest}` : shown }), 96, "  ")
+			.map(paint.warning));
+	}
+	if (coverage.unlabelled > 0) {
+		lines.push(`  ${paint.warning(t("coverage.unlabelled", { cases: plural(coverage.unlabelled, "case") }))}`);
+	}
+	lines.push(`  ${paint.dim(t("coverage.origins", coverage.byOrigin))}`);
+	return lines;
+}
+
+/** The critic's last word on exactly this draft, or the fact that nobody asked. */
+function renderDraftCritic(critic: WorkbenchCriticProjection | null | undefined, paint: Paint): string[] {
+	if (!critic) return [`${paint.dim(t("panel.critic"))} ${paint.muted(t("critic.none"))}`];
+	const summary = critic.counts.invalid > 0
+		? paint.warning(t("critic.summary", critic.counts))
+		: paint.success(t("critic.summary", critic.counts));
+	const lines = [`${paint.dim(t("panel.critic"))} ${summary}`];
+	if (critic.counts.invalid + critic.counts.repair > 0) lines.push(`  ${paint.muted(t("critic.next"))}`);
+	return lines;
+}
+
+/** What left the basket is read next to what is still in it: every removal carries its reason. */
+type CorpusDraftReview = Extract<WorkbenchReviewDetail, { kind: "corpus-draft" }>;
+
 function renderCorpusDraft(
-	content: Extract<WorkbenchReviewDetail, { kind: "corpus-draft" }>,
+	content: CorpusDraftReview,
 	paint: Paint,
 	options: RenderReviewOptions,
 ): string[] {
 	const maxTasks = options.maxTasks ?? 25;
 	const lines = [
 		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${plural(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
+		...renderCorpusSources(content.sourceFreshness, paint),
 	];
 	if (content.importSource) lines.push(`${paint.dim(t("view.imported-from"))} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
 	// The same cards `/traces` draws, from the same two functions. A draft used
@@ -599,6 +738,20 @@ function renderCorpusDraft(
 		paint,
 	));
 	if (content.tasks.length > maxTasks) lines.push(`  ${paint.dim(t("view.more-cases", { count: content.tasks.length - maxTasks }))}`);
+	if (content.coverage) lines.push(...renderCoverage(content.coverage, paint));
+	lines.push(...renderDraftCritic(content.critic, paint));
+	const exclusions = content.exclusions ?? [];
+	if (exclusions.length > 0) {
+		lines.push(paint.dim(t("coverage.excluded", { cases: plural(exclusions.length, "case") })));
+		lines.push(...bullets(
+			exclusions.slice(-COVERAGE_CELLS_SHOWN).map((exclusion) => exclusion.reason),
+			paint,
+			{ limit: COVERAGE_CELLS_SHOWN, max: 140 },
+		));
+	}
+	// Said once under every basket panel: the one rule that stops a corpus from
+	// improving its own numbers by losing the cases the agent cannot pass.
+	lines.push(paint.dim(t("basket.rule")));
 	if (content.coverageNotes.length > 0) lines.push(paint.dim(t("view.coverage-notes")), ...bullets(content.coverageNotes, paint, { limit: 8, max: 140 }));
 	if (content.taskProvenance.length > 0) lines.push(`${paint.dim(t("view.provenance"))} ${t("view.provenance-bound", { cases: plural(content.taskProvenance.length, "case") })}`);
 	lines.push(`${paint.dim(t("label.draft"))} ${paint.dim(shortHash(content.draftHash))} ${paint.dim(`· ${t("label.spec")}`)} ${paint.dim(content.approvedSpec.specId)}`);
@@ -774,6 +927,13 @@ export interface RenderTracesOptions {
 	 * later, `Дальше Скажи «исправь первую проблему» (Разбор)`.
 	 */
 	next?: boolean;
+	/**
+	 * The run rows of this evaluation, when the host could read them: the
+	 * compact panel then carries the case table itself instead of sending the
+	 * operator to `/traces` for the one thing they want to see after a run —
+	 * which cases failed, and why.
+	 */
+	runs?: { rows: readonly RunRow[]; modes: readonly EvalPageMode[]; limit?: number } | null;
 }
 
 export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, options: RenderTracesOptions = {}): string[] {
@@ -812,6 +972,9 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, optio
 		}
 		const hidden = Math.max(0, brief.summary.failureModeCount - Math.min(brief.modes.length, 3));
 		if (hidden > 0) lines.push(paint.dim(t("mode.more-in-explorer", { count: hidden })));
+		if (options.runs && options.runs.rows.length > 0) {
+			lines.push("", ...renderRunsTable(options.runs.rows, options.runs.modes, paint, { limit: options.runs.limit ?? DEFAULT_TRACE_TABLE_ROWS }), "");
+		}
 		lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.details-on-request"))}`);
 		if (options.next !== false) {
 			const next = brief.proposalEligible ? "diagnosis.next.fix" : brief.status === "healthy" ? "diagnosis.next.harder" : "diagnosis.next.repair";
@@ -847,6 +1010,7 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, optio
 	if (content.worldCases && content.worldCases.length > 0) {
 		lines.push(paint.dim(t("traces.world-cases")), ...renderDatasetCases(content.worldCases, paint));
 	}
+	if (content.basket) lines.push("", ...renderBasket(content.basket, paint));
 	lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.no-explorer"))}`);
 	if (options.next !== false) {
 		const next = brief.proposalEligible
@@ -903,11 +1067,8 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 		lines.push(paint.dim(t("view.target.harness-files")));
 		for (const resource of harnessFiles) lines.push(resourceLine(resource));
 	}
-	// The knowledge base is not a resource — its bytes are never authored and
-	// never read here — but it is half of what an agent like session 7's knows,
-	// and `/target` listed `AGENTS.md`, both `bin/*` and both `tools/*` while
-	// saying nothing at all about the three `data/kb/*.md` the manifest
-	// declares. Shape only: how many files, how large, and a few of their names.
+	// The overview lists data shape. An explicitly selected committed KB document
+	// is displayed separately below as read-only knowledge, never an editable resource.
 	if (content.data.length > 0) {
 		lines.push(paint.dim(t("view.target.data")));
 		for (const directory of content.data) {
@@ -1160,37 +1321,52 @@ function worldClause(path: string, op: string, value: string | null): string {
 	return op === "exists" ? `${path} exists` : `${path} ${op} ${value ?? "—"}`;
 }
 
+/** Optional case details do not disappear when a case also has a world. */
+function caseDetailLines(sample: WorkbenchDatasetCase, paint: Paint): string[] {
+	const text = (value: string, max = WORLD_LINE_COLUMNS): string => oneLine(redactTraceText(clean(value)), max);
+	const lines: string[] = [];
+	if (sample.expected !== null) lines.push(`      ${paint.dim(t("view.expected"))} ${text(sample.expected)}`);
+	if (sample.messages?.length) {
+		const last = sample.messages[sample.messages.length - 1]?.content ?? "";
+		lines.push(`      ${paint.dim(t("view.dialogue"))} ${plural(sample.messages.length, "turn")} ${paint.dim(t("view.dialogue-ending", { last: text(last, 50) }))}`);
+	}
+	if (sample.simulatedUser) {
+		const persona = sample.simulatedUser.persona ? t("view.live-user-as", { persona: text(sample.simulatedUser.persona, 40) }) : "";
+		lines.push(
+			`      ${paint.dim(t("view.live-user"))} ${text(sample.simulatedUser.goal, 60)}${persona} ` +
+				paint.dim(t("view.live-user-turns", { turns: plural(sample.simulatedUser.maxTurns, "turn") })),
+		);
+		if (sample.simulatedUser.knownFacts) lines.push(`      ${paint.dim(t("view.known-facts"))} ${text(sample.simulatedUser.knownFacts)}`);
+		if (sample.simulatedUser.stopWhen) lines.push(`      ${paint.dim(t("view.user-stop"))} ${text(sample.simulatedUser.stopWhen)}`);
+	}
+	const sourceKeys = ["source", "source_path", "source_sha256"];
+	const sources = sourceKeys.flatMap((key) => {
+		const value = sample.metadata?.[key];
+		return value?.trim() ? [`        ${key}=${text(value)}`] : [];
+	});
+	if (sources.length > 0) lines.push(`      ${paint.dim(t("view.source-claims"))}`, ...sources);
+	const pairs = Object.entries(sample.metadata ?? {})
+		.filter(([key, value]) => !sourceKeys.includes(key) && !SECRET_WORLD_KEY.test(clean(key).trim()) && value.trim())
+		.slice(0, 4)
+		.map(([key, value]) => text(`${key}=${value}`, 48));
+	if (pairs.length > 0) lines.push(`      ${paint.dim(t("view.metadata"))} ${oneLine(pairs.join(" · "), WORLD_LINE_COLUMNS)}`);
+	return lines;
+}
+
 /**
  * One case as a card: its own name, then who is in the world, what is already
  * true of it, what they want, and what must be true when the conversation ends.
  *
- * A case without a world keeps exactly the lines it has always had — the world
- * card is a different reading of a different kind of case, not a redesign of
- * the old one, and its own first line is already the case's words. The first
- * line carries no indent either way: `renderDatasetCases` puts the case number
- * in front of it.
+ * Both kinds of case carry the same optional details. The first line carries
+ * no indent: `renderDatasetCases` puts the case number in front of it.
  */
 export function worldCardLines(sample: TitledDatasetCase, paint: Paint): string[] {
 	if (!sample.world) {
-		const lines = [oneLine(sample.input, 92)];
-		if (sample.expected !== null) lines.push(`      ${paint.dim(t("view.expected"))} ${oneLine(sample.expected, 88)}`);
-		if (sample.messages) {
-			const last = sample.messages[sample.messages.length - 1]?.content ?? "";
-			lines.push(`      ${paint.dim(t("view.dialogue"))} ${plural(sample.messages.length, "turn")} ${paint.dim(t("view.dialogue-ending", { last: oneLine(last, 50) }))}`);
-		}
-		if (sample.simulatedUser) {
-			const persona = sample.simulatedUser.persona ? t("view.live-user-as", { persona: oneLine(sample.simulatedUser.persona, 40) }) : "";
-			lines.push(
-				`      ${paint.dim(t("view.live-user"))} ${oneLine(sample.simulatedUser.goal, 60)}${persona} ` +
-					paint.dim(t("view.live-user-turns", { turns: plural(sample.simulatedUser.maxTurns, "turn") })),
-			);
-		}
-		if (sample.metadata) {
-			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
-			lines.push(`      ${paint.dim(t("view.metadata"))} ${oneLine(pairs.join(" · "), 88)}`);
-		}
-		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), CARD_GRADER_COLUMNS)}`);
-		return lines;
+		return [
+			oneLine(sample.input, 92),
+			...caseDetailLines(sample, paint),
+			`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), CARD_GRADER_COLUMNS)}`,
+		];
 	}
 	const state = worldStateOf(sample);
 	// The person in the world, then the person the case describes, then the
@@ -1239,6 +1415,7 @@ export function worldCardLines(sample: TitledDatasetCase, paint: Paint): string[
 		`      ${paint.dim(t("view.world.who"))} ${oneLine(who, WORLD_LINE_COLUMNS)}`,
 		`      ${paint.dim(t("view.world.has"))} ${oneLine(has, WORLD_LINE_COLUMNS)}`,
 		`      ${paint.dim(t("view.world.wants"))} ${oneLine(wants, WORLD_LINE_COLUMNS)}`,
+		...caseDetailLines(sample, paint),
 		`      ${paint.dim(t("view.world.must"))} ${oneLine(must.join(" · "), WORLD_LINE_COLUMNS) || "—"}`,
 	];
 }
@@ -1267,8 +1444,6 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 		? renderDataset(view.detail.content, paint)
 		: view.detail.aspect === "history"
 		? renderHistory(view.detail.content, paint)
-		: view.detail.aspect === "models"
-		? renderModelExperiments(view.detail.content, paint)
 		: renderTarget(view.detail.content, paint);
 	return [...status, "", ...detail];
 }
@@ -1281,7 +1456,6 @@ export function viewTitle(view: WorkbenchView): string {
 	if (view.detail.aspect === "target") return panel(t("panel.target"));
 	if (view.detail.aspect === "history") return panel(t("panel.history"));
 	if (view.detail.aspect === "dataset") return panel(t("panel.dataset"));
-	if (view.detail.aspect === "models") return panel(t("models.title"));
 	switch (view.detail.content.kind) {
 		case "spec-draft": return panel(t("panel.spec-review"));
 		case "corpus-draft": return panel(t("panel.basket-review"));

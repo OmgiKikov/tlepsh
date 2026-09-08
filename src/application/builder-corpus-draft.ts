@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { CorpusTaskSchema, type CorpusTask } from "../corpus.js";
-import { GraderSpec, TaskSchema, taskDialogueIssue } from "../manifest.js";
+import { GraderSpec, TaskSchema, taskDialogueIssue, type CaseSource, isDeterministicGrader } from "../manifest.js";
 import { canonicalJson, HashSchema, hashValue } from "../provenance.js";
 import {
 	ApprovedSpecReferenceSchema,
@@ -15,6 +15,7 @@ import {
 	type BuilderCorpusImportSource,
 } from "./builder-corpus-import-contract.js";
 import { ProductionFailureProvenanceSourceSchema } from "./failure-intake.js";
+import { CorpusSourceBindingSchema, type CorpusSourceBinding } from "./corpus-source.js";
 import { contained, projectStateDir } from "../storage/paths.js";
 
 /** A draft stays small enough for a human to read every case before publishing. */
@@ -41,8 +42,20 @@ const NonBlankSchema = z
 	.refine((value) => value.trim().length > 0, "expected non-blank text");
 const DraftNameSchema = z.string().trim().min(1).max(200);
 const GraderIndexSchema = z.number().int().min(0).max(15);
-export const BuilderCorpusDraftCoverageNotesSchema = z.array(NonBlankSchema.max(1_000)).max(100);
+export const BuilderCorpusDraftCoverageNotesSchema = z.array(NonBlankSchema.max(1_000)).max(100)
+	.describe("Explain covered behaviours, synthetic fixture assumptions and unresolved coverage. Unknown business rules are questions, not invented scored answers. Simulator cases exercise model-generated dialogue, not proven real-user behaviour.");
 const RevisionSummarySchema = NonBlankSchema.max(4_000);
+const ExclusionReasonSchema = NonBlankSchema.max(500)
+	.describe("Why this case is not a valid test. Never “it fails”: a failing correct case is capability work, not an exclusion.");
+
+/** One case taken out of the basket, and the reason that took it out. */
+export const BuilderCorpusDraftExclusionSchema = z.strictObject({
+	taskId: TaskIdSchema,
+	reason: ExclusionReasonSchema,
+	at: z.iso.datetime({ offset: true }),
+});
+export type BuilderCorpusDraftExclusion = z.infer<typeof BuilderCorpusDraftExclusionSchema>;
+const MAX_EXCLUSIONS = 500;
 
 /**
  * Builder input deliberately omits task ids; the trusted host derives them.
@@ -61,6 +74,11 @@ export const BuilderCorpusDraftTaskInputSchema = z.strictObject({
 	// field list, so omitting it would drop the world between draft and corpus.
 	world: TaskSchema.shape.world,
 	metadata: TaskSchema.shape.metadata,
+	// Which cell of the basket this case fills, and where it came from. Both are
+	// checked against the world outside the draft — the approved Spec's jobs and
+	// the bytes the citation names — before the draft is written.
+	coverage: TaskSchema.shape.coverage,
+	source: TaskSchema.shape.source,
 	graders: z.array(GraderSpec).min(1).max(16),
 }).superRefine((task, context) => {
 	const dialogue = taskDialogueIssue(task);
@@ -102,6 +120,10 @@ export const BuilderCorpusDraftRevisionOperationSchema = z.discriminatedUnion("t
 	z.strictObject({
 		type: z.literal("remove"),
 		taskId: TaskIdSchema,
+		// A case is never dropped for failing. Taking one out is an exclusion, and
+		// an exclusion without a stated reason is indistinguishable from deleting
+		// the hard tasks until the numbers look better.
+		reason: ExclusionReasonSchema,
 	}),
 	z.strictObject({
 		type: z.literal("set-graders"),
@@ -198,7 +220,7 @@ export const BuilderCorpusDraftRevisionOperationsSchema = z
 	});
 
 interface BuilderCorpusDraftIdentity {
-	schemaVersion: 2 | 3;
+	schemaVersion: 2 | 3 | 4;
 	kind: "builder-corpus-draft";
 	projectId: string;
 	approvedSpec: ApprovedSpecReference;
@@ -206,7 +228,10 @@ interface BuilderCorpusDraftIdentity {
 	name: string;
 	tasks: CorpusTask[];
 	importSource?: BuilderCorpusImportSource;
+	sourceBinding?: CorpusSourceBinding;
 	taskProvenance?: BuilderCorpusDraftTaskProvenance[];
+	/** Absent on every draft that never excluded a case, so old ids still verify. */
+	exclusions?: BuilderCorpusDraftExclusion[];
 	coverageNotes: string[];
 	revisionSummary: string;
 	source: "builder-pi";
@@ -217,9 +242,18 @@ export function builderCorpusDraftTaskId(approvedSpec: ApprovedSpecReference, ta
 	return `task-${identity.slice("sha256:".length)}`;
 }
 
+/** What a task's labels are checked against: the Spec that names the jobs, and the sources on disk. */
+interface TaskLabelChecks {
+	/** The approved Spec's jobs, verbatim; a coverage label must name one of them. */
+	jobs: readonly string[];
+	/** Host-side verification of a model-facing citation, when a Target is resolved. */
+	verifySource?: ((source: CaseSource) => void) | undefined;
+}
+
 function normalizeTasks(
 	approvedSpec: ApprovedSpecReference,
 	tasksInput: readonly unknown[],
+	checks: TaskLabelChecks,
 ): CorpusTask[] {
 	const inputs = BuilderCorpusDraftTasksInputSchema.parse(tasksInput);
 	const tasks = inputs.map((task) => CorpusTaskSchema.parse({
@@ -230,6 +264,30 @@ function normalizeTasks(
 	for (const task of tasks) {
 		if (seen.has(task.id)) throw new Error("Builder corpus draft contains duplicate task content");
 		seen.add(task.id);
+		// A coverage matrix whose rows are the author's paraphrases measures
+		// nothing against the Spec, so the job must be one of the Spec's own.
+		if (task.coverage && !checks.jobs.includes(task.coverage.job)) {
+			throw new Error(
+				`coverage.job ${JSON.stringify(task.coverage.job)} is not a job of the approved Spec; ` +
+				`use one of: ${checks.jobs.map((job) => JSON.stringify(job)).join(", ")}`,
+			);
+		}
+		if (task.source) {
+			if (task.source.kind === "production" || task.source.kind === "generated") {
+				throw new Error(`source.kind ${task.source.kind} is host-minted and cannot be written by a Builder`);
+			}
+			checks.verifySource?.(task.source);
+		}
+		// A simulated dialogue is scored by its outcome: what the world says
+		// afterwards, or a check that reads the transcript deterministically. A
+		// judge-only simulated case proves nothing about the interaction the
+		// simulator exists to test, only that two models agreed with each other.
+		if (task.simulatedUser && !task.world?.expect?.length && !task.graders.some(isDeterministicGrader)) {
+			throw new Error(
+				`simulated-user case “${task.input.slice(0, 80)}” is scored only by a judge; add a world.expect or a deterministic grader ` +
+				"(world_state, tool_called, output_contains, output_matches, turn_budget) so its outcome decides the case",
+			);
+		}
 	}
 	return tasks;
 }
@@ -239,7 +297,7 @@ function draftIdentity(record: BuilderCorpusDraftIdentity): string {
 }
 
 export const BuilderCorpusDraftSchema = z.strictObject({
-	schemaVersion: z.union([z.literal(2), z.literal(3)]),
+	schemaVersion: z.union([z.literal(2), z.literal(3), z.literal(4)]),
 	kind: z.literal("builder-corpus-draft"),
 	id: DraftIdSchema,
 	projectId: ProjectIdSchema,
@@ -248,12 +306,22 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 	name: DraftNameSchema,
 	tasks: z.array(BuilderCorpusDraftStoredTaskSchema).min(1).max(MAX_DRAFT_TASKS),
 	importSource: BuilderCorpusImportSourceSchema.optional(),
+	sourceBinding: CorpusSourceBindingSchema.optional(),
 	taskProvenance: z.array(BuilderCorpusDraftTaskProvenanceSchema).max(MAX_DRAFT_TASKS).optional(),
+	/** Optional so drafts written before exclusions carried reasons still load and still hash. */
+	exclusions: z.array(BuilderCorpusDraftExclusionSchema).max(MAX_EXCLUSIONS).optional(),
 	coverageNotes: BuilderCorpusDraftCoverageNotesSchema,
 	revisionSummary: RevisionSummarySchema,
 	source: z.literal("builder-pi"),
 	createdAt: z.iso.datetime({ offset: true }),
 }).superRefine((draft, context) => {
+	if ((draft.schemaVersion === 4) !== (draft.sourceBinding !== undefined)) {
+		context.addIssue({
+			code: "custom",
+			path: ["sourceBinding"],
+			message: "sourceBinding requires Builder corpus draft schemaVersion 4, and version 4 requires sourceBinding",
+		});
+	}
 	if (draft.schemaVersion === 2 && draft.taskProvenance?.some((entry) => entry.kind === "production-failure")) {
 		context.addIssue({
 			code: "custom",
@@ -317,7 +385,9 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 		name: draft.name,
 		tasks: draft.tasks,
 		...(draft.importSource !== undefined ? { importSource: draft.importSource } : {}),
+		...(draft.sourceBinding !== undefined ? { sourceBinding: draft.sourceBinding } : {}),
 		...(draft.taskProvenance !== undefined ? { taskProvenance: draft.taskProvenance } : {}),
+		...(draft.exclusions !== undefined ? { exclusions: draft.exclusions } : {}),
 		coverageNotes: draft.coverageNotes,
 		revisionSummary: draft.revisionSummary,
 		source: draft.source,
@@ -342,8 +412,12 @@ export interface CreateBuilderCorpusDraftOptions {
 	coverageNotes?: readonly string[];
 	/** Trusted host-derived import provenance; model-facing draft schemas cannot populate it. */
 	verifiedImportSource?: unknown;
+	/** Host-captured KB source identity; never accepted from model-facing draft inputs. */
+	sourceBinding?: CorpusSourceBinding;
 	/** Trusted host-derived task provenance; model-facing draft schemas cannot populate it. */
 	verifiedTaskProvenance?: readonly unknown[];
+	/** Host check of every model-written citation; absent where no Target is resolved to check against. */
+	verifySource?: (source: CaseSource) => void;
 	revisionSummary: string;
 }
 
@@ -354,6 +428,8 @@ export interface ReviseBuilderCorpusDraftOptions {
 	operations: readonly unknown[];
 	/** Trusted host-derived, operation-bound provenance; model-facing schemas cannot populate it. */
 	verifiedTaskProvenance?: readonly unknown[];
+	/** Host check of every model-written citation; absent where no Target is resolved to check against. */
+	verifySource?: (source: CaseSource) => void;
 	revisionSummary: string;
 }
 
@@ -381,7 +457,11 @@ function artifactPath(stateRoot: string, projectId: string, draftIdInput: string
 	return join(root, `${draftId}.json`);
 }
 
-function exactApprovedSpec(stateRoot: string, referenceInput: ApprovedSpecReference): ApprovedSpecReference {
+/** The exact reference, plus the jobs a coverage label has to name. */
+function exactApprovedSpec(
+	stateRoot: string,
+	referenceInput: ApprovedSpecReference,
+): { reference: ApprovedSpecReference; jobs: readonly string[] } {
 	const reference = ApprovedSpecReferenceSchema.parse(referenceInput);
 	const loaded = loadApprovedSpec({
 		stateRoot,
@@ -391,7 +471,7 @@ function exactApprovedSpec(stateRoot: string, referenceInput: ApprovedSpecRefere
 	if (canonicalJson(loaded.reference) !== canonicalJson(reference)) {
 		throw new Error("approved Spec reference does not match the exact stored snapshot");
 	}
-	return reference;
+	return { reference, jobs: loaded.snapshot.spec.jobs };
 }
 
 function identityOf(draft: BuilderCorpusDraft): BuilderCorpusDraftIdentity {
@@ -404,7 +484,9 @@ function identityOf(draft: BuilderCorpusDraft): BuilderCorpusDraftIdentity {
 		name: draft.name,
 		tasks: draft.tasks,
 		...(draft.importSource !== undefined ? { importSource: draft.importSource } : {}),
+		...(draft.sourceBinding !== undefined ? { sourceBinding: draft.sourceBinding } : {}),
 		...(draft.taskProvenance !== undefined ? { taskProvenance: draft.taskProvenance } : {}),
+		...(draft.exclusions !== undefined ? { exclusions: draft.exclusions } : {}),
 		coverageNotes: draft.coverageNotes,
 		revisionSummary: draft.revisionSummary,
 		source: draft.source,
@@ -447,12 +529,14 @@ export function createBuilderCorpusDraft(
 	options: CreateBuilderCorpusDraftOptions,
 	dependencies: Partial<BuilderCorpusDraftDependencies> = {},
 ): BuilderCorpusDraftResult {
-	const approvedSpec = exactApprovedSpec(options.stateRoot, options.approvedSpec);
-	const tasks = normalizeTasks(approvedSpec, options.tasks);
+	const { reference: approvedSpec, jobs } = exactApprovedSpec(options.stateRoot, options.approvedSpec);
+	const checks: TaskLabelChecks = { jobs, verifySource: options.verifySource };
+	const tasks = normalizeTasks(approvedSpec, options.tasks, checks);
 	const taskProvenance = z.array(BuilderCorpusDraftTaskProvenanceSchema).max(MAX_DRAFT_TASKS)
 		.parse(options.verifiedTaskProvenance ?? []);
 	const identity: BuilderCorpusDraftIdentity = {
-		schemaVersion: taskProvenance.some((provenance) => provenance.kind === "production-failure") ? 3 : 2,
+		schemaVersion: options.sourceBinding !== undefined ? 4
+			: taskProvenance.some((provenance) => provenance.kind === "production-failure") ? 3 : 2,
 		kind: "builder-corpus-draft",
 		projectId: approvedSpec.projectId,
 		approvedSpec,
@@ -461,6 +545,9 @@ export function createBuilderCorpusDraft(
 		tasks,
 		...(options.verifiedImportSource !== undefined
 			? { importSource: BuilderCorpusImportSourceSchema.parse(options.verifiedImportSource) }
+			: {}),
+		...(options.sourceBinding !== undefined
+			? { sourceBinding: CorpusSourceBindingSchema.parse(options.sourceBinding) }
 			: {}),
 		...(taskProvenance.length > 0 ? { taskProvenance } : {}),
 		coverageNotes: BuilderCorpusDraftCoverageNotesSchema.parse(options.coverageNotes ?? []),
@@ -480,9 +567,14 @@ function taskIndex(tasks: CorpusTask[], taskIdInput: string, operation: string):
 /** Apply bounded semantic operations and publish a new immutable child draft. */
 export function reviseBuilderCorpusDraft(
 	options: ReviseBuilderCorpusDraftOptions,
-	dependencies: Partial<BuilderCorpusDraftDependencies> = {},
+	dependencies: Partial<BuilderCorpusDraftDependencies> & {
+		/** Check the final task context once all operations are applied, before writing the child. */
+		validateTasks?: (tasks: readonly CorpusTask[]) => void;
+	} = {},
 ): BuilderCorpusDraftResult {
-	const approvedSpec = exactApprovedSpec(options.stateRoot, options.approvedSpec);
+	const { reference: approvedSpec, jobs } = exactApprovedSpec(options.stateRoot, options.approvedSpec);
+	const checks: TaskLabelChecks = { jobs, verifySource: options.verifySource };
+	const now = dependencies.now ?? DEFAULT_DEPENDENCIES.now;
 	const parentDraftId = DraftIdSchema.parse(options.parentDraftId);
 	const parent = loadBuilderCorpusDraft(options.stateRoot, approvedSpec.projectId, parentDraftId);
 	if (parent.projectId !== approvedSpec.projectId) {
@@ -495,6 +587,9 @@ export function reviseBuilderCorpusDraft(
 	const operations = BuilderCorpusDraftRevisionOperationsSchema.parse(options.operations);
 	let name = parent.name;
 	let coverageNotes = [...parent.coverageNotes];
+	// Carried forward, never rewritten: the lineage of what left the basket is
+	// the only defence against a basket that improves by losing its hard cases.
+	const exclusions: BuilderCorpusDraftExclusion[] = [...(parent.exclusions ?? [])];
 	const tasks = parent.tasks.map((task) => ({ ...task, graders: task.graders.map((grader) => ({ ...grader })) }));
 	const knownTaskProvenance = new Map(
 		(parent.taskProvenance ?? []).map((provenance) => [provenance.taskId, provenance] as const),
@@ -505,7 +600,7 @@ export function reviseBuilderCorpusDraft(
 		// Everything but the graders survives a regrade, including a reference
 		// answer, a dialogue, and imported row metadata.
 		const { id: _previousId, graders: _previousGraders, ...carried } = tasks[index]!;
-		const normalized = normalizeTasks(approvedSpec, [{ ...carried, graders }])[0];
+		const normalized = normalizeTasks(approvedSpec, [{ ...carried, graders }], checks)[0];
 		if (!normalized) throw new Error(`${operation} did not produce a task`);
 		const provenance = taskProvenance.get(taskId);
 		if (provenance) {
@@ -541,7 +636,7 @@ export function reviseBuilderCorpusDraft(
 		}
 		switch (operation.type) {
 			case "add": {
-				const normalized = normalizeTasks(approvedSpec, [operation.task])[0];
+				const normalized = normalizeTasks(approvedSpec, [operation.task], checks)[0];
 				if (!normalized) throw new Error("add operation did not produce a task");
 				tasks.push(normalized);
 				if (verifiedProvenance) {
@@ -559,16 +654,19 @@ export function reviseBuilderCorpusDraft(
 			}
 			case "replace": {
 				const index = taskIndex(tasks, operation.taskId, "replace");
-				const normalized = normalizeTasks(approvedSpec, [operation.task])[0];
+				const normalized = normalizeTasks(approvedSpec, [operation.task], checks)[0];
 				if (!normalized) throw new Error("replace operation did not produce a task");
 				taskProvenance.delete(operation.taskId);
 				tasks[index] = normalized;
 				break;
 			}
-			case "remove":
+			case "remove": {
+				const index = taskIndex(tasks, operation.taskId, "remove");
 				taskProvenance.delete(operation.taskId);
-				tasks.splice(taskIndex(tasks, operation.taskId, "remove"), 1);
+				tasks.splice(index, 1);
+				exclusions.push({ taskId: operation.taskId, reason: operation.reason, at: now() });
 				break;
+			}
 			case "set-graders":
 				replaceGraders(operation.taskId, operation.graders, "set-graders");
 				break;
@@ -616,7 +714,7 @@ export function reviseBuilderCorpusDraft(
 	}
 
 	const identity: BuilderCorpusDraftIdentity = {
-		schemaVersion: parent.schemaVersion === 3 || [...taskProvenance.values()]
+		schemaVersion: parent.sourceBinding !== undefined ? 4 : parent.schemaVersion === 3 || [...taskProvenance.values()]
 			.some((provenance) => provenance.kind === "production-failure")
 			? 3
 			: 2,
@@ -625,16 +723,23 @@ export function reviseBuilderCorpusDraft(
 		approvedSpec,
 		parentDraftId: parent.id,
 		name,
+		// Citations are verified where they are written; re-reading the Git blob
+		// of every carried case on every revision would charge a grader edit for
+		// the whole basket's sources.
 		tasks: normalizeTasks(
 			approvedSpec,
 			tasks.map(({ id: _id, ...task }) => task),
+			{ jobs },
 		),
 		...(parent.importSource !== undefined ? { importSource: parent.importSource } : {}),
+		...(parent.sourceBinding !== undefined ? { sourceBinding: parent.sourceBinding } : {}),
 		...(taskProvenance.size > 0 ? { taskProvenance: [...taskProvenance.values()] } : {}),
+		...(exclusions.length > 0 ? { exclusions: exclusions.slice(-MAX_EXCLUSIONS) } : {}),
 		coverageNotes,
 		revisionSummary: RevisionSummarySchema.parse(options.revisionSummary),
 		source: "builder-pi",
 	};
+	dependencies.validateTasks?.(identity.tasks);
 	return publishDraft(options.stateRoot, identity, dependencies);
 }
 

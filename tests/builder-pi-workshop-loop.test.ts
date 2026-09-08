@@ -261,13 +261,13 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: SEALED_VERIFICATION_REPETITIONS,
-								reason: "Run the exact development and sealed promotion gates",
+								reason: "Run the exact development gate",
 							});
 						case 19:
 							return call(step, "ahde_workbench_decide", {
 								kind: "ship",
 								version: "0.1.0",
-								reason: "Development improved and the sealed guardrail passed",
+								reason: "Development improved; run the exam and release",
 							});
 						case 20: {
 							const shipped = parseToolResult(context, 19);
@@ -414,7 +414,8 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 		const review = panels.find((panel) => panel.data.title === "AHDE · Proposal review");
 		expect(review?.type).toBe(AHDE_TRANSCRIPT_ENTRY_TYPE);
 		const body = stripMarkers(review!.data.lines.join("\n"));
-		expect(body).toContain("+++ b/tools/ready_check/tool.yaml");
+		expect(body).toContain("tools/ready_check/tool.yaml (new file)");
+		expect(body).toContain("+ name: ready_check");
 		expect(body).toContain("Validation plan");
 		expect(body).toContain("Changes");
 		expect(timeline.indexOf("panel:AHDE · Proposal review"))
@@ -435,13 +436,14 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 			{ tool: "ready_check", draftId: expect.stringMatching(/^corpus-draft/), cases: 3 },
 		]);
 
-		// Applied, verified and shipped through the unchanged downstream contract.
+		// Applied, checked on the basket, and shipped — the exam inside the ship —
+		// through the unchanged downstream contract.
 		const verified = observed.find((entry) => entry.details.result?.resolvedAs === "verify-candidate")!;
 		expect(verified.details.result).toMatchObject({
 			candidate: {
 				status: "evaluated",
 				development: { gate: { verdict: "improved" } },
-				sealedHoldout: { executed: true, gatePassed: true, gate: { verdict: "pass" } },
+				sealedHoldout: { executed: false, gatePassed: false, gate: null },
 			},
 		});
 		const shipped = observed.find((entry) => entry.kind === "ship")!;
@@ -483,15 +485,16 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 }, 300_000);
 
 /**
- * The construction path, end to end: the operator never runs a knowingly
- * unbuilt agent to failure before they are allowed to build its tools.
+ * The construction path, end to end: a new agent is built before it is
+ * measured, and nobody runs a knowingly-unbuilt template to failure first.
  *
  * Spec → construction workshop (write the tool, run it, watch it fail, fix it,
- * run it again) → close with no evidence behind it → apply → the first run →
- * ship → the baseline run on the shipped agent → diagnose → the improvement
- * workshop → close → apply → verify → ship.
+ * run it again, write the instructions) → close with no evidence behind it →
+ * apply, which LANDS the first build as the working agent (no candidate, no
+ * exam) → the first tests, run on the agent that now exists → diagnose → the
+ * improvement workshop → close → apply → verify → ship v0.1.0.
  */
-it("builds the first harness from the Spec, ships it, then improves it from its own diagnosis", async () => {
+it("builds the first harness from the Spec, lands it, then measures and improves the agent that exists", async () => {
 	const targetMock = await startMockModel([
 		{ match: ({ system }) => system.includes(PLUS_INSTRUCTION), steps: [{ text: "READY PLUS" }] },
 		{ match: ({ system }) => system.includes(READY_INSTRUCTION), steps: [{ text: "READY" }] },
@@ -553,7 +556,66 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 								repetitions: 1,
 								reason: "Approve the Spec so the agent can be built against it",
 							});
+						// The agent is still the template, so the workshop comes before
+						// any test: this is where it gets written.
 						case 4:
+							return call(step, "ahde_workbench_submit", { kind: "workshop-open" });
+						case 5:
+							return call(step, "ahde_workshop_read", { path: "AGENTS.md" });
+						case 6:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/tool.yaml",
+								content: READY_CHECK_DESCRIPTOR,
+							});
+						case 7:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/run",
+								content: READY_CHECK_RUN_BROKEN,
+							});
+						case 8:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/contract.txt",
+								content: "READY\n",
+							});
+						// Run the code before proposing it. It fails.
+						case 9:
+							return call(step, "ahde_workshop_try", { tool: "ready_check", input: { answer: "READY" } });
+						case 10:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/run",
+								oldText: "contract-typo.txt",
+								newText: "prepared-contract.txt",
+							});
+						// Run it again. It works.
+						case 11:
+							return call(step, "ahde_workshop_try", { tool: "ready_check", input: { answer: "READY" } });
+						case 12: {
+							const current = String(parseToolResult(context, 5).content);
+							return call(step, "ahde_workshop_write", {
+								path: "AGENTS.md",
+								content: `${current.trimEnd()}\n\n${READY_INSTRUCTION}\n`,
+							});
+						}
+						// No source, no failure modes: there is no evaluation to cite yet.
+						case 13:
+							return call(step, "ahde_workbench_submit", {
+								kind: "workshop-close",
+								summary: "Build the first harness the Spec describes: the answer contract and a checker for it.",
+								risks: ["Nothing has been measured yet; this is the first build."],
+								validationPlan: ["Write the tests and run them on the built agent."],
+							});
+						// Accepted, the first build IS the agent: verify is asked for, as
+						// the persona always does, and the host lands the build instead.
+						case 14:
+							return call(step, "ahde_workbench_decide", {
+								kind: "apply-proposal",
+								runId: String(parseToolResult(context, 13).artifact.runId),
+								branch: "candidate/construction-loop",
+								verify: { repetitions: SEALED_VERIFICATION_REPETITIONS },
+								reason: "The exact diff is the code I ran in the workshop",
+							});
+						// Only now the tests, and the first run measures the built agent.
+						case 15:
 							return call(step, "ahde_workbench_submit", {
 								kind: "corpus-draft",
 								name: "Construction development basket",
@@ -576,102 +638,28 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 								coverageNotes: ["Both cases ask for the same two-part contract."],
 								revisionSummary: "Initial development basket",
 							});
-						case 5:
-							// Publish, but do not run: the agent has not been built yet, and
-							// nobody should have to watch it fail before building it.
-							return call(step, "ahde_workbench_decide", {
-								kind: "publish-corpus",
-								reason: "Freeze the reviewed basket before building the harness",
-							});
-						// The construction workshop: bound to the Spec, not to a diagnosis.
-						case 6:
-							return call(step, "ahde_workbench_submit", { kind: "workshop-open" });
-						case 7:
-							return call(step, "ahde_workshop_read", { path: "AGENTS.md" });
-						case 8:
-							return call(step, "ahde_workshop_write", {
-								path: "tools/ready_check/tool.yaml",
-								content: READY_CHECK_DESCRIPTOR,
-							});
-						case 9:
-							return call(step, "ahde_workshop_write", {
-								path: "tools/ready_check/run",
-								content: READY_CHECK_RUN_BROKEN,
-							});
-						case 10:
-							return call(step, "ahde_workshop_write", {
-								path: "tools/ready_check/contract.txt",
-								content: "READY\n",
-							});
-						// Run the code before proposing it. It fails.
-						case 11:
-							return call(step, "ahde_workshop_try", { tool: "ready_check", input: { answer: "READY" } });
-						case 12:
-							return call(step, "ahde_workshop_write", {
-								path: "tools/ready_check/run",
-								oldText: "contract-typo.txt",
-								newText: "prepared-contract.txt",
-							});
-						// Run it again. It works.
-						case 13:
-							return call(step, "ahde_workshop_try", { tool: "ready_check", input: { answer: "READY" } });
-						case 14: {
-							const current = String(parseToolResult(context, 7).content);
-							return call(step, "ahde_workshop_write", {
-								path: "AGENTS.md",
-								content: `${current.trimEnd()}\n\n${READY_INSTRUCTION}\n`,
-							});
-						}
-						// No source, no failure modes: there is no evaluation to cite yet.
-						case 15:
-							return call(step, "ahde_workbench_submit", {
-								kind: "workshop-close",
-								summary: "Build the first harness the Spec describes: the answer contract and a checker for it.",
-								risks: ["Nothing has been measured yet; this is the first build."],
-								validationPlan: ["Run the reviewed development basket and the sealed gate."],
-							});
 						case 16:
-							return call(step, "ahde_workbench_decide", {
-								kind: "apply-proposal",
-								runId: String(parseToolResult(context, 15).artifact.runId),
-								branch: "candidate/construction-loop",
-								reason: "The exact diff is the code I ran in the workshop",
-							});
-						case 17:
-							return call(step, "ahde_workbench_decide", {
-								kind: "run-current",
-								repetitions: SEALED_VERIFICATION_REPETITIONS,
-								reason: "Measure the built harness against the unbuilt baseline",
-							});
-						case 18:
-							return call(step, "ahde_workbench_decide", {
-								kind: "ship",
-								version: "0.1.0",
-								reason: "The built harness improved on the basket and passed the sealed gate",
-							});
-						// The shipped agent is now the Target. This is its baseline run.
-						case 19:
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: 1,
-								reason: "Measure the shipped agent on the reviewed basket",
+								reason: "Publish the reviewed basket and measure the built agent",
 							});
-						case 20:
+						case 17:
 							return call(step, "ahde_workbench_view", { aspect: "traces" });
-						// And now the ordinary improvement workshop, bound to that diagnosis.
-						case 21:
+						// The ordinary improvement workshop, bound to that diagnosis.
+						case 18:
 							return call(step, "ahde_workbench_submit", { kind: "workshop-open" });
-						case 22:
+						case 19:
 							return call(step, "ahde_workshop_read", { path: "AGENTS.md" });
-						case 23: {
-							const current = String(parseToolResult(context, 22).content);
+						case 20: {
+							const current = String(parseToolResult(context, 19).content);
 							return call(step, "ahde_workshop_write", {
 								path: "AGENTS.md",
 								content: `${current.trimEnd()}\n\n${PLUS_INSTRUCTION}\n`,
 							});
 						}
-						case 24: {
-							const brief = parseToolResult(context, 20).detail.content.improvementBrief as {
+						case 21: {
+							const brief = parseToolResult(context, 17).detail.content.improvementBrief as {
 								algorithmId: string;
 								evalRunId: string;
 								diagnosisId: string;
@@ -681,7 +669,7 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 							const mode = brief.modes.find((candidate) =>
 								candidate.decision === "propose-harness-change" && candidate.selectableForProposal
 							);
-							if (!mode) throw new Error("the shipped harness produced no proposal-eligible failure mode");
+							if (!mode) throw new Error("the built harness produced no proposal-eligible failure mode");
 							return call(step, "ahde_workbench_submit", {
 								kind: "workshop-close",
 								source: {
@@ -696,27 +684,27 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 								validationPlan: ["Re-run the reviewed development basket and the sealed gate."],
 							});
 						}
-						case 25:
+						case 22:
 							return call(step, "ahde_workbench_decide", {
 								kind: "apply-proposal",
-								runId: String(parseToolResult(context, 24).artifact.runId),
+								runId: String(parseToolResult(context, 21).artifact.runId),
 								branch: "candidate/construction-improve",
 								reason: "The exact diff is the code I ran in the workshop",
 							});
-						case 26:
+						case 23:
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: SEALED_VERIFICATION_REPETITIONS,
-								reason: "Run the exact development and sealed promotion gates",
+								reason: "Run the exact development gate",
 							});
-						case 27:
+						case 24:
 							return call(step, "ahde_workbench_decide", {
 								kind: "ship",
-								version: "0.2.0",
-								reason: "Development improved and the sealed guardrail passed",
+								version: "0.1.0",
+								reason: "Development improved; run the exam and release",
 							});
-						case 28: {
-							const shipped = parseToolResult(context, 27);
+						case 25: {
+							const shipped = parseToolResult(context, 24);
 							return { text: `Агент собран и улучшен: ${shipped.result.tag}.` };
 						}
 						default:
@@ -814,16 +802,20 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 
 		await session.prompt(
 			"Собери агента по спецификации: напиши инструмент в мастерской, запусти, почини, " +
-			"закрой мастерскую диффом, примени, выкати, потом измерь и улучши.",
+			"закрой мастерскую диффом, примени, потом напиши тесты, измерь и улучши.",
 		);
 
-		expect(session.getLastAssistantText()).toContain("v0.2.0");
+		expect(session.getLastAssistantText()).toContain("v0.1.0");
 
-		// The construction workshop opened on the Spec, before any evaluation.
+		// The construction workshop opened on the Spec, before any test existed,
+		// and the persona was told so: the agent was still the template.
 		const opens = observed.filter((entry) => entry.kind === "workshop-open");
 		expect(opens).toHaveLength(2);
 		expect(opens[0]?.details.artifact.basis).toBe("construction");
-		expect(opens[0]?.details.view.stage).toBe("ready-to-evaluate");
+		expect(opens[0]?.details.view.stage).toBe("corpus-design");
+		expect(opens[0]?.details.view.target.built).toBe(false);
+		const approved = observed.find((entry) => entry.kind === "run-current")!;
+		expect(approved.details.view.next.unblock).toMatch(/still the template/);
 		expect(opens[1]?.details.artifact.basis).toBe("improvement");
 		expect(opens[1]?.details.view.stage).toBe("improvement-authoring");
 
@@ -854,31 +846,58 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 			.find((entry) => entry.runId === constructionRun.runId);
 		expect(admitted?.proposalSha256).toBe(constructionRun.artifacts.proposal?.sha256);
 
-		// The improvement proposal does cite exactly one.
+		// Applied, the first build landed as the working agent: no candidate, no
+		// verification, the operator's branch on the built revision, and the
+		// view saying the tests are next.
+		const applies = observed.filter((entry) => entry.kind === "apply-proposal");
+		expect(applies).toHaveLength(2);
+		const firstBuild = applies[0]!.details;
+		expect(firstBuild.result.firstBuild).toEqual({ branch: expect.any(String), targetGitSha: firstBuild.result.candidateSha });
+		expect(firstBuild.result.verification).toBeUndefined();
+		// The build brought a tool, so the host drafted that tool's three contract
+		// cases on the spot: the first tests already have a draft to review.
+		expect(firstBuild.result.contractCases).toEqual([
+			{ tool: "ready_check", draftId: expect.stringMatching(/^corpus-draft/), cases: 3 },
+		]);
+		expect(firstBuild.view.stage).toBe("corpus-review");
+		expect(firstBuild.view.target.built).toBe(true);
+		expect(firstBuild.view.target.gitSha).toBe(firstBuild.result.candidateSha);
+		expect(firstBuild.view.next.unblock).toBe("review the cases, then say “tests”");
+
+		// The improvement proposal does cite exactly one mode, from a run that
+		// measured the BUILT agent: its baseline is the first build's revision.
 		expect(closes[1]?.details.artifact.basis).toBe("improvement");
 		expect(closes[1]?.details.artifact.sourceEvalRunId).not.toBeNull();
 		expect(closes[1]?.details.artifact.failureModeIds).toHaveLength(1);
+		// Two start-testing composites ran: the Spec approval (no basket yet, so no
+		// run) and the first measurement. The run is the second one.
+		const baseline = observed
+			.filter((entry) => entry.details.result?.resolvedAs === "start-testing")
+			.map((entry) => entry.details.result)
+			.find((result) => result.evaluation !== null)!;
+		expect(baseline.evaluation.evaluation.targetGitSha).toBe(firstBuild.result.candidateSha);
 
-		// Both candidates were verified on both surfaces and shipped.
+		// Exactly one change was checked on the basket, and its ship ran the exam.
 		const verified = observed.filter((entry) => entry.details.result?.resolvedAs === "verify-candidate");
-		expect(verified).toHaveLength(2);
-		for (const entry of verified) {
-			expect(entry.details.result).toMatchObject({
-				candidate: {
-					status: "evaluated",
-					development: { gate: { verdict: "improved" } },
-					sealedHoldout: { executed: true, gatePassed: true, gate: { verdict: "pass" } },
-				},
-			});
-		}
+		expect(verified).toHaveLength(1);
+		expect(verified[0]?.details.result).toMatchObject({
+			candidate: {
+				status: "evaluated",
+				development: { gate: { verdict: "improved" } },
+				sealedHoldout: { executed: false, gatePassed: false, gate: null },
+			},
+		});
 		const shipped = observed.filter((entry) => entry.kind === "ship");
-		expect(shipped.map((entry) => entry.details.result.tag)).toEqual(["v0.1.0", "v0.2.0"]);
+		expect(shipped.map((entry) => entry.details.result.tag)).toEqual(["v0.1.0"]);
 
-		// The shipped Target carries the tool written in the construction workshop.
+		// The shipped Target carries the tool written in the construction workshop
+		// and both halves of the instruction.
 		const shippedTarget = loadTarget(projectDir);
 		expect(shippedTarget.tools.map((tool) => tool.descriptor.name).sort()).toEqual(["echo_json", "ready_check"]);
 		expect(shippedTarget.tools.find((tool) => tool.descriptor.name === "ready_check")?.layout).toBe("directory");
-		expect(readFileSync(join(projectDir, "AGENTS.md"), "utf8")).toContain(PLUS_INSTRUCTION);
+		const instructions = readFileSync(join(projectDir, "AGENTS.md"), "utf8");
+		expect(instructions).toContain(READY_INSTRUCTION);
+		expect(instructions).toContain(PLUS_INSTRUCTION);
 
 		// No workshop outlived its proposal.
 		expect(execFileSync("git", ["-C", projectDir, "worktree", "list"], { encoding: "utf8" }).trim().split("\n"))

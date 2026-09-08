@@ -4,12 +4,12 @@
 #
 # Сначала детерминированные — они ничего не стоят и не плывут:
 #   {"type": "output_contains", "text": "500"}
+#   {"type": "output_excludes", "text": "30 дней"}       # the must-not check: a trap value the answer may not state
 #   {"type": "output_matches",  "pattern": "^Заявка W-"}
 #   {"type": "tool_called",     "tool": "get_account"}
 #   {"type": "world_state",     "path": "tickets.0.status", "op": "equals", "value": "open"}
 #
 # `judge` — только там, где судить приходится прозу. Нужен блок judge в
 # manifest.yaml, судья не может быть моделью самого агента, а некалиброванный
-# судья так и помечается в паспорте, пока не выполнено
-# `ahde label <evalRunId> --target .`.
+# судья так и помечается в паспорте, пока не выполнен /label в разговоре с Билдером.
 defaults: []

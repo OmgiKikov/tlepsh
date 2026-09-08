@@ -108,7 +108,7 @@ import {
 } from "./improvement-selection.js";
 export type { ImprovementSelectionSummary } from "./improvement-selection.js";
 
-/** Bounds a single `ahde improve` invocation. */
+/** Bounds a single improvement-loop invocation. */
 export const MAX_IMPROVEMENT_CYCLES = 10;
 
 /**
@@ -146,7 +146,7 @@ const ImprovementLoopConfigurationSchema = z.strictObject({
 type ImprovementLoopConfiguration = z.infer<typeof ImprovementLoopConfigurationSchema>;
 
 /**
- * The durable record of one `ahde improve` invocation. It exists so a second
+ * The durable record of one improvement-loop invocation. It exists so a second
  * invocation can see an unfinished first one instead of racing it onto the same
  * branch names, and so `--resume` can pick the same loop up where it stopped.
  */
@@ -870,7 +870,7 @@ async function runImprovementLoopOwned(
 	// itself an uncommitted file.
 	assertCleanTargetTree(repositoryDir, {
 		because: "an improvement loop cuts every branch from one clean committed baseline",
-		next: "commit or stash them (a run log written inside the Target counts), then run ahde improve again",
+		next: "commit or stash them (a run log written inside the Target counts), then ask for the improvement again",
 	});
 	const experimentDesign = blindSearch && developmentCorpus
 		? dependencies.materializeExperimentDesign({
@@ -1616,7 +1616,7 @@ export interface RecordedProposalAuthorOptions {
  * against this cycle's exact development SURFACE, neither applied nor
  * discarded.
  *
- * Surface, not eval-run id. Every `ahde improve` invocation mints a fresh
+ * Surface, not eval-run id. Every improvement-loop invocation mints a fresh
  * EvalRun, so binding a proposal to `source.evalRunId === this run` meant no
  * proposal a human prepared in the conversation before the command could ever
  * match, and any prepared after a stop was stale on the next invocation. What

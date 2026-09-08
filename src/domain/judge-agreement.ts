@@ -4,7 +4,7 @@ import { kappa, percent } from "../measurement.js";
  * How well a judge agrees with the humans who checked it.
  *
  * A judge grader is an instrument, and an instrument nobody has ever compared
- * against a human is an opinion with a cost. `ahde label` collects the human
+ * against a human is an opinion with a cost. `/label` collects the human
  * side; this module is the arithmetic, and nothing else: no I/O, no clock, no
  * evidence loading, so the numbers on a report and the numbers behind a
  * promotion refusal are computed by exactly one function.

@@ -42,6 +42,7 @@ export const GraderCheckCodeSchema = z.enum([
 	"required-tool",
 	"output-contains",
 	"output-matches",
+	"output-excludes",
 	"no-secret",
 	"semantic-rubric",
 	"reference-exact",
@@ -62,6 +63,7 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"required-tool": "tool_called",
 	"output-contains": "output_contains",
 	"output-matches": "output_matches",
+	"output-excludes": "output_excludes",
 	"no-secret": "no_secret",
 	"semantic-rubric": "judge",
 	"reference-exact": "exact",
@@ -242,10 +244,6 @@ export const ModelFingerprintSchema = z.strictObject({
 export type ModelFingerprint = z.infer<typeof ModelFingerprintSchema>;
 
 /** Capabilities and resource-discovery policy that can change agent behaviour. */
-export const ContainerSandboxFingerprintSchema = z
-	.string()
-	.regex(/^container:docker@sha256:[0-9a-f]{64}:config:[0-9a-f]{64}$/);
-
 export const ExecutionFingerprintSchema = z.strictObject({
 	/**
 	 * Which backend produced the answer. A Pi arm and a command arm are
@@ -266,10 +264,7 @@ export const ExecutionFingerprintSchema = z.strictObject({
 	workspace: z.enum(["isolated-copy-v1", "direct-v1"]),
 	tools: z.array(NonEmptyStringSchema),
 	environment: z.array(NonEmptyStringSchema),
-	sandbox: z.union([
-		z.enum(["sandbox-exec", "bwrap", "none", "unavailable"]),
-		ContainerSandboxFingerprintSchema,
-	]),
+	sandbox: z.enum(["sandbox-exec", "bwrap", "none", "unavailable"]),
 	network: z.enum(["deny", "allow"]),
 	filesystem: z.enum([
 		"workspace-confined-v1",
@@ -352,7 +347,7 @@ export const RunRecordSchema = z
 			.strictObject({ evalRunId: NonEmptyStringSchema, candidateOf: GitShaSchema.nullable() })
 			.nullable(),
 		/**
-		 * Set only by `ahde regrade`: the exact recorded execution whose copied
+		 * Set only by `/regrade`: the exact recorded execution whose copied
 		 * trace this record re-scores. Absent — and canonically dropped — on every
 		 * run that actually called a model, so existing evidence is unchanged.
 		 */
@@ -562,6 +557,11 @@ export function provenanceAxes(record: {
 
 export function provenanceKey(record: Parameters<typeof provenanceAxes>[0]): string {
 	return hashValue(provenanceAxes(record));
+}
+
+/** The label one provenance axis carries in a difference list, e.g. `eval.simulatedUser`. */
+export function axisLabel(key: keyof ProvenanceAxes): string {
+	return AXIS_LABELS[key];
 }
 
 const AXIS_LABELS: Record<keyof ProvenanceAxes, string> = {

@@ -2,7 +2,6 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { parsePassRateFlag } from "../cli-invocation.js";
 import { runGraderScore } from "../compare.js";
 import { JudgeVerdictSidecarSchema } from "./run-explanation.js";
 import { isScreenEvalRun } from "./cheap-check.js";
@@ -10,6 +9,7 @@ import { corpusDatasetLabel } from "./corpus-target.js";
 import { plural, t, type MessageKey } from "../i18n.js";
 import { publicTaskId } from "./improvement-brief.js";
 import { listCorpora, loadCorpus, type CorpusVisibility } from "../corpus.js";
+export { sealedDatasetHashesFor } from "../corpus.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -24,7 +24,7 @@ import { resolveContainedArtifactPath, safeArtifactSegment } from "../storage/pa
 import { openTrace, redactTraceText, type TraceMessage } from "../trace.js";
 
 /**
- * `ahde export` — the recorded dataset.
+ * `/dataset` — the recorded dataset.
  *
  * Every emulated conversation AHDE ran is already on disk. This module compiles
  * it into JSONL somebody else can read: one line per exported run in the
@@ -165,13 +165,14 @@ export interface DatasetJudgeVerdict {
 }
 
 /**
- * The person the Target was talking to, when a model played one. `goal` and
- * `persona` are the case's own; `turns` and `stop` are what the conversation
- * actually did, and are absent rather than invented when the run recorded none.
+ * The person the Target was talking to, when a model played one. `goal`,
+ * `persona` and `knownFacts` are the case's own; `turns` and `stop` describe the
+ * recorded conversation and are absent rather than invented when not recorded.
  */
 export interface DatasetSimulatedUser {
 	goal: string;
 	persona?: string;
+	knownFacts?: string;
 	turns?: number;
 	stop?: string;
 }
@@ -258,7 +259,7 @@ export interface DatasetExportResult {
  */
 export interface DatasetTaskFacts {
 	world?: { state: Record<string, unknown> } | undefined;
-	simulatedUser?: { goal: string; persona?: string | undefined } | undefined;
+	simulatedUser?: { goal: string; persona?: string | undefined; knownFacts?: string | undefined } | undefined;
 }
 
 export type DatasetTaskLookup = (record: EvalRunRecord) => ReadonlyMap<string, DatasetTaskFacts>;
@@ -999,6 +1000,9 @@ export function datasetLine(input: DatasetLineInput): DatasetExportLine {
 						...(simulatedUser.persona !== undefined
 							? { persona: boundedText(simulatedUser.persona, MAX_DATASET_MESSAGE_CHARS) }
 							: {}),
+						...(simulatedUser.knownFacts !== undefined
+							? { knownFacts: boundedText(simulatedUser.knownFacts, MAX_DATASET_MESSAGE_CHARS) }
+							: {}),
 						...(run.metrics.conversationTurns !== undefined ? { turns: run.metrics.conversationTurns } : {}),
 						...(run.metrics.conversationStop !== undefined ? { stop: run.metrics.conversationStop } : {}),
 					},
@@ -1012,12 +1016,6 @@ export function datasetLine(input: DatasetLineInput): DatasetExportLine {
 // ---------- The cases an eval cited ----------
 
 /**
- * This project's sealed corpus content hashes, so an eval run recorded before
- * `evidenceVisibility` existed is still refused by what its dataset hashes to.
- * A state root that cannot be listed contributes nothing rather than an
- * exception: the explicit `evidenceVisibility` check is unaffected.
- */
-/**
  * The cases behind an EvalRun, read from the published corpus it cites.
  *
  * The corpus is the only place the export will look: `loadCorpus` verifies the
@@ -1027,18 +1025,6 @@ export function datasetLine(input: DatasetLineInput): DatasetExportLine {
  * reading `evals/dataset.jsonl` out of the operator's current checkout would be
  * exactly the reread invariant 2 forbids — and contributes no facts at all.
  */
-export function sealedDatasetHashesFor(options: { stateRoot: string; projectId: string }): Set<string> {
-	try {
-		return new Set(
-			listCorpora(options)
-				.filter((corpus) => corpus.visibility === "sealed")
-				.map((corpus) => corpus.hash),
-		);
-	} catch {
-		return new Set();
-	}
-}
-
 export function corpusTaskLookup(options: { stateRoot: string; projectId: string }): DatasetTaskLookup {
 	const cache = new Map<string, ReadonlyMap<string, DatasetTaskFacts>>();
 	return (record) => {
@@ -1069,6 +1055,7 @@ export function corpusTaskLookup(options: { stateRoot: string; projectId: string
 						simulatedUser: {
 							goal: task.simulatedUser.goal,
 							...(task.simulatedUser.persona !== undefined ? { persona: task.simulatedUser.persona } : {}),
+							...(task.simulatedUser.knownFacts !== undefined ? { knownFacts: task.simulatedUser.knownFacts } : {}),
 						},
 					}
 					: {}),
@@ -1076,45 +1063,6 @@ export function corpusTaskLookup(options: { stateRoot: string; projectId: string
 		}
 		cache.set(key, facts);
 		return facts;
-	};
-}
-
-// ---------- CLI glue ----------
-
-/**
- * Turn one validated CLI invocation's flags into export options.
- *
- * This lives here rather than in `cli.ts` so it can be pinned by a test. It
- * consumes the parser's own flag map — where a boolean flag is the string
- * `"true"` — instead of re-reading `process.argv`, which cannot tell
- * `--all` at the end of a line from `--all` that was never passed.
- */
-export function datasetExportOptionsFromFlags(
-	flags: Readonly<Record<string, string | undefined>>,
-	base: {
-		runsRoot: string;
-		outRoot?: string;
-		sealedDatasetHashes?: ReadonlySet<string>;
-		tasks?: DatasetTaskLookup;
-		now?: () => Date;
-	},
-): ExportDatasetOptions {
-	const minScore = flags["min-score"] === undefined
-		? undefined
-		: parsePassRateFlag(flags["min-score"]) ?? DEFAULT_DATASET_MIN_SCORE;
-	return {
-		runsRoot: base.runsRoot,
-		...(base.outRoot !== undefined ? { outRoot: base.outRoot } : {}),
-		...(base.sealedDatasetHashes ? { sealedDatasetHashes: base.sealedDatasetHashes } : {}),
-		...(base.tasks ? { tasks: base.tasks } : {}),
-		...(base.now ? { now: base.now } : {}),
-		...(flags.run !== undefined ? { runId: flags.run } : {}),
-		...(flags.eval !== undefined ? { evalRunId: flags.eval } : {}),
-		...(flags.all === "true" ? { all: true } : {}),
-		...(flags.out !== undefined ? { outDir: resolve(flags.out) } : {}),
-		...(minScore !== undefined ? { minScore } : {}),
-		...(flags["include-failed"] === "true" ? { includeFailed: true } : {}),
-		...(flags["include-aa"] === "true" ? { includeAa: true } : {}),
 	};
 }
 

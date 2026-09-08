@@ -32,7 +32,7 @@ describe("evaluation workspace", () => {
 		const html = await response.text();
 		expect([...html.matchAll(/data-row /g)]).toHaveLength(1);
 		expect(html).toContain('name="q" value="task_001"');
-		for (const path of ["/", `/runs/${f.failingRunId}`, `/candidates/${f.candidateId}`, `/candidates/${f.candidateId}/replay`]) {
+		for (const path of ["/", `/runs/${f.failingRunId}`, `/candidates/${f.candidateId}`]) {
 			const other = await fetch(`${address.url}${path}`);
 			expect(other.headers.get("content-security-policy")).toContain("form-action 'none'");
 		}
@@ -47,7 +47,7 @@ describe("evaluation workspace", () => {
 		expect(html).toContain(`data-selected-run="${f.failingRunId}"`);
 		expect(html).toContain(`outcome=fail&amp;run=${f.failingRunId}#inspector`);
 		expect(html).toContain(`href="/runs/${f.failingRunId}"`);
-		expect(html).toContain(`href="/candidates/${f.candidateId}/replay"`);
+		expect(html).toContain(`href="/candidates/${f.candidateId}"`);
 		expect(html).toContain('id="trace-step-0" tabindex="-1"');
 		expect(html).toContain('href="#trace-step-0"');
 		expect(html).toContain('method="get"');

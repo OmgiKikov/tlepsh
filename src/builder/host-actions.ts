@@ -56,7 +56,7 @@ export function createBuilderHostActions(options: BuilderHostActionOptions): Bui
 			tone: "info",
 			lines: [
 				...renderExecutiveVersionCard(card, markerPaint),
-				reportWritten ? t("release.html.saved", { path: clean(reportWritten) }) : markerPaint.warning(t("release.html.not-saved")),
+				reportWritten ? t("release.html.saved", { path: markerPaint.link(clean(reportWritten)) }) : markerPaint.warning(t("release.html.not-saved")),
 				"",
 				...renderVersionPassport(passport, markerPaint),
 				"",
@@ -67,7 +67,7 @@ export function createBuilderHostActions(options: BuilderHostActionOptions): Bui
 		});
 		return [
 			...renderExecutiveVersionCard(card, markerPaint).map(stripMarkers),
-			...(reportWritten ? [t("release.html.saved", { path: clean(reportWritten) })] : []),
+			...(reportWritten ? [t("release.html.saved", { path: markerPaint.link(clean(reportWritten)) })] : []),
 			...(written ? [`${t("passport.written-to")} ${clean(written)}`] : []),
 		].join("\n");
 	};

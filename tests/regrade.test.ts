@@ -29,7 +29,7 @@ import { AHDE_EVALUATOR_ID, hashValue } from "../src/provenance.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 /**
- * `ahde regrade` re-scores recorded traces. Every test here therefore checks two
+ * `/regrade` re-scores recorded traces. Every test here therefore checks two
  * things at once: the new evidence is a valid EvalRun, and the Target model was
  * never asked anything again.
  */
@@ -256,7 +256,7 @@ describe("regrade with changed suite defaults", () => {
 		}
 	}, SUITE_TIMEOUT_MS);
 
-	it("names its source in the ahde list row", async () => {
+	it("names its source in the eval-run list row", async () => {
 		const result = await regrade(sourceA.evalRunId, narrowedGraders);
 		const line = renderEvalRunListLine(result.record);
 

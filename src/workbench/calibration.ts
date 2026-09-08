@@ -1,5 +1,7 @@
 import type { CandidateRecord } from "../domain/candidate.js";
 import { examCasesForMeasuredBand } from "../domain/power.js";
+import { readEvalRunIndex } from "../eval.js";
+import { canonicalJson } from "../provenance.js";
 import type { WorkbenchCalibrationProjection } from "./types.js";
 
 /**
@@ -37,21 +39,70 @@ export function recommendedRepetitions(passRate: number, taskCount: number): num
 	return MAX_RECOMMENDED_REPETITIONS;
 }
 
+/** How a user model is named to a human: one string, provider and id. */
+function modelName(model: { provider: string; id: string }): string {
+	return `${model.provider}/${model.id}`;
+}
+
+/**
+ * Whether the two development arms played the user with different models, and
+ * which model the second one used.
+ *
+ * The answer comes from the evidence rather than from the caller's intent: the
+ * eval-run indexes carry the model that actually played the user, so a record
+ * that says "simulator noise" and two arms that ran the same simulator cannot
+ * disagree here. An unreadable index says nothing — a projection is a reading
+ * of a receipt, and losing the receipt must not invent a fact.
+ */
+function alternateSimulator(
+	runsRoot: string,
+	baselineEvalRunId: string,
+	candidateEvalRunId: string,
+	alternate: { provider: string; id: string } | null | undefined,
+): { kind: "alternate"; model: string } | null {
+	let baseline;
+	let candidate;
+	try {
+		baseline = readEvalRunIndex(runsRoot, baselineEvalRunId).provenance.simulatedUser;
+		candidate = readEvalRunIndex(runsRoot, candidateEvalRunId).provenance.simulatedUser;
+	} catch {
+		return null;
+	}
+	if (canonicalJson(baseline ?? null) === canonicalJson(candidate ?? null)) return null;
+	// The recorded identity first, because that is the model that ran; the
+	// manifest's alternate block only fills in for evidence too old to carry one.
+	const model = candidate ?? alternate;
+	return model ? { kind: "alternate", model: modelName(model) } : null;
+}
+
 /**
  * Pure projection of one calibration record. Returns null unless the record
  * is an A/A experiment that reached `evaluated` with development gate evidence
  * carrying a verdict (v3 or v4) — legacy v1/v2 or unfinished records have none
  * to show. Calibration measures noise and never promotes, so it reads any
  * verdict-bearing evidence rather than promotion-grade evidence only.
+ *
+ * With `runsRoot` it also reads what each arm measured with, which is how a
+ * band that is simulator noise rather than harness noise says so. Without it
+ * the projection is exactly what it always was.
  */
-export function calibrationProjection(record: CandidateRecord): WorkbenchCalibrationProjection | null {
+export function calibrationProjection(
+	record: CandidateRecord,
+	runsRoot?: string,
+	/** The manifest's alternate user block, for naming a model the evidence does not. */
+	alternate?: { provider: string; id: string } | null,
+): WorkbenchCalibrationProjection | null {
 	if (record.mode !== "aa-calibration") return null;
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (evaluated?.type !== "evaluated") return null;
-	const evidence = evaluated.evaluation.development.comparison;
+	const development = evaluated.evaluation.development;
+	const evidence = development.comparison;
 	if (!evidence || !("verdict" in evidence)) return null;
 	const summary = evidence.summary;
 	const taskCount = summary.taskCount;
+	const simulator = runsRoot
+		? alternateSimulator(runsRoot, development.baseline.evalRunId, development.candidate.evalRunId, alternate)
+		: null;
 	return {
 		candidateId: record.candidateId,
 		targetSha: record.baseline.sha,
@@ -69,6 +120,9 @@ export function calibrationProjection(record: CandidateRecord): WorkbenchCalibra
 			taskCount,
 		),
 		verdict: evidence.verdict,
+		// Absent rather than null when the arms shared one simulator, so a
+		// projection of an ordinary A/A stays exactly the object it was.
+		...(simulator ? { simulator } : {}),
 		at: evaluated.at,
 	};
 }

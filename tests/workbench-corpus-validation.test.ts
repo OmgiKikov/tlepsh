@@ -1,10 +1,23 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { plural, setLanguage, t } from "../src/i18n.js";
 import { createAhdeWorkbench, type WorkbenchHumanGate } from "../src/workbench/index.js";
 import { assertGradersRunnable, draftWorldWarnings } from "../src/application/corpus-target.js";
+import { verifyCaseSource } from "../src/application/corpus-source.js";
+import { loadTarget } from "../src/manifest.js";
+import { sha256 } from "../src/util.js";
+import * as corpusTarget from "../src/application/corpus-target.js";
+import {
+	BuilderCorpusDraftTaskInputSchema,
+	builderCorpusDraftTaskId,
+	createBuilderCorpusDraft,
+	listBuilderCorpusDrafts,
+	loadBuilderCorpusDraft,
+	type BuilderCorpusDraftRevisionOperation,
+	type BuilderCorpusDraftTaskInput,
+} from "../src/application/builder-corpus-draft.js";
 import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/inventory.js";
 import { writeEvalRun } from "../src/eval.js";
 import { hashValue, modelFingerprint, provenanceAxes, RunRecordSchema } from "../src/provenance.js";
@@ -15,6 +28,7 @@ import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const roots: string[] = [];
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) cleanup(root);
 });
 
@@ -238,6 +252,146 @@ describe("corpus grader validation against the current Target", () => {
 			manifest,
 			"basket",
 		)).not.toThrow();
+	});
+});
+
+describe("corpus revision preflight", () => {
+	const context = {
+		input: "What is the refund window?",
+		world: { state: { refundDays: 30 } },
+		metadata: { name: "refund-window" },
+	};
+	const exact = { type: "exact", normalize: "lower" } as const;
+	const similarity = { type: "similarity", metric: "token-f1", threshold: 0.8 } as const;
+	const contains = { type: "output_contains", text: "30 days", caseSensitive: false } as const;
+	const operations: {
+		type: string;
+		operation: (taskId: string, task: BuilderCorpusDraftTaskInput) => BuilderCorpusDraftRevisionOperation;
+	}[] = [
+		{ type: "add", operation: (_taskId, task) => ({ type: "add", task }) },
+		{ type: "replace", operation: (taskId, task) => ({ type: "replace", taskId, task }) },
+		{ type: "set-graders", operation: (taskId, task) => ({ type: "set-graders", taskId, graders: task.graders }) },
+		{ type: "grader.add", operation: (taskId, task) => ({ type: "grader.add", taskId, grader: task.graders[0]! }) },
+		{ type: "grader.update", operation: (taskId, task) => ({ type: "grader.update", taskId, graderIndex: 0, grader: task.graders[0]! }) },
+	];
+
+	async function fixture(task: BuilderCorpusDraftTaskInput) {
+		const workbench = await approvedWorkbench();
+		const initial = await workbench.submit({
+			kind: "corpus-draft", name: "Reference basket", tasks: [task], revisionSummary: "initial",
+		});
+		const parent = loadBuilderCorpusDraft(workbench.stateRoot, workbench.projectId, String(initial.artifact?.id));
+		return { workbench, parent };
+	}
+
+	describe.each(operations)("$type", ({ type, operation }) => {
+		it.each([exact, similarity])("accepts a legal $type reference grader with the complete task context", async (grader) => {
+			const task = BuilderCorpusDraftTaskInputSchema.parse({
+				...context,
+				expected: "30 days",
+				...(grader.type === "exact"
+					? { messages: [{ role: "user", content: context.input }] }
+					: { simulatedUser: { goal: "Learn the refund window", knownFacts: "I bought it yesterday.", maxTurns: 3 } }),
+				graders: [grader],
+			});
+			const { workbench, parent } = await fixture({ ...task, graders: [contains] });
+			const revised = await workbench.submit({
+				kind: "corpus-revision", parentDraftId: parent.id,
+				operations: [operation(parent.tasks[0]!.id, task)], revisionSummary: "Use the reference answer",
+			});
+			const stored = loadBuilderCorpusDraft(workbench.stateRoot, workbench.projectId, String(revised.artifact?.id));
+			expect(stored.tasks.at(-1)).toEqual({
+				...task, id: expect.any(String), graders: type === "grader.add" ? [contains, grader] : [grader],
+			});
+			expect(loadBuilderCorpusDraft(workbench.stateRoot, workbench.projectId, parent.id)).toEqual(parent);
+			expect(listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId)).toHaveLength(2);
+		});
+
+		it.each([undefined, "  "])("rejects an absent or blank reference (%j) without a child artifact", async (expected) => {
+			const task = BuilderCorpusDraftTaskInputSchema.parse({ ...context, expected, graders: [exact] });
+			const { workbench, parent } = await fixture({ ...task, graders: [contains] });
+			await expect(workbench.submit({
+				kind: "corpus-revision", parentDraftId: parent.id,
+				operations: [operation(parent.tasks[0]!.id, task)], revisionSummary: "Missing reference",
+			})).rejects.toThrow(/corpus revision cannot run[\s\S]*exact graders compare[\s\S]*no "expected"/);
+			expect(listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId)).toEqual([parent]);
+			expect((await workbench.view()).focus["corpus-draft"]).toBe(parent.id);
+		});
+	});
+
+	it("validates only the final tasks of an ordered atomic batch before writing", async () => {
+		const { workbench, parent } = await fixture(BuilderCorpusDraftTaskInputSchema.parse({
+			input: "Keep this case", graders: [contains],
+		}));
+		const missing = BuilderCorpusDraftTaskInputSchema.parse({ ...context, graders: [exact] });
+		const fixed = BuilderCorpusDraftTaskInputSchema.parse({
+			...missing, expected: "30 days", messages: [{ role: "user", content: context.input }],
+		});
+		const regraded = { ...fixed, graders: [similarity] };
+		const added = { ...fixed, graders: [similarity, exact] };
+		const updated = { ...fixed, graders: [similarity, contains] };
+		const id = (task: BuilderCorpusDraftTaskInput) => builderCorpusDraftTaskId(parent.approvedSpec, task);
+		const batch: BuilderCorpusDraftRevisionOperation[] = [
+			{ type: "add", task: missing },
+			{ type: "replace", taskId: id(missing), task: fixed },
+			{ type: "set-graders", taskId: id(fixed), graders: regraded.graders },
+			{ type: "grader.add", taskId: id(regraded), grader: exact },
+			{ type: "grader.update", taskId: id(added), graderIndex: 1, grader: contains },
+			{ type: "grader.remove", taskId: id(updated), graderIndex: 1 },
+		];
+		const expectedTasks = [...parent.tasks, { ...regraded, id: id(regraded) }];
+		const validate = corpusTarget.assertGradersRunnable;
+		let validations = 0;
+		vi.spyOn(corpusTarget, "assertGradersRunnable").mockImplementation((tasks, manifest, label, options) => {
+			if (label === "corpus revision") {
+				validations++;
+				expect(tasks).toEqual(expectedTasks);
+				expect(listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId)).toEqual([parent]);
+			}
+			validate(tasks, manifest, label, options);
+		});
+		const revised = await workbench.submit({
+			kind: "corpus-revision", parentDraftId: parent.id, operations: batch, revisionSummary: "Repair then regrade",
+		});
+		expect(validations).toBe(1);
+		expect(loadBuilderCorpusDraft(workbench.stateRoot, workbench.projectId, String(revised.artifact?.id)).tasks)
+			.toEqual(expectedTasks);
+		const before = listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId);
+		await expect(workbench.submit({
+			kind: "corpus-revision", parentDraftId: parent.id,
+			operations: [batch[1]!, batch[0]!, ...batch.slice(2)], revisionSummary: "Wrong operation order",
+		})).rejects.toThrow(/replace references unknown task/);
+		expect(listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId)).toEqual(before);
+	});
+
+	it.each(["rename", "grader.remove"] as const)("checks surviving parent graders on %s, but allows removing an invalid case", async (type) => {
+		const { workbench, parent } = await fixture(BuilderCorpusDraftTaskInputSchema.parse({
+			input: "Keep this case", graders: [contains],
+		}));
+		// Imports can persist unrunnable drafts so the operator can repair them.
+		const imported = createBuilderCorpusDraft({
+			stateRoot: workbench.stateRoot, approvedSpec: parent.approvedSpec,
+			name: "Unrunnable import", revisionSummary: "import",
+			tasks: [
+				{ ...context, graders: [exact, contains] },
+				{ input: "Keep this case", graders: [contains] },
+			],
+		}).draft;
+		const before = listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId);
+		await expect(workbench.submit({
+			kind: "corpus-revision", parentDraftId: imported.id,
+			operations: [type === "rename"
+				? { type, name: "Still unrunnable" }
+				: { type, taskId: imported.tasks[0]!.id, graderIndex: 1 }],
+			revisionSummary: "Does not repair the surviving reference grader",
+		})).rejects.toThrow(/exact graders compare[\s\S]*no "expected"/);
+		expect(listBuilderCorpusDrafts(workbench.stateRoot, workbench.projectId)).toEqual(before);
+		const repaired = await workbench.submit({
+			kind: "corpus-revision", parentDraftId: imported.id,
+			operations: [{ type: "remove", taskId: imported.tasks[0]!.id, reason: "its grader can never fire" }], revisionSummary: "Remove the invalid case",
+		});
+		expect(loadBuilderCorpusDraft(workbench.stateRoot, workbench.projectId, String(repaired.artifact?.id)).tasks)
+			.toEqual(parent.tasks);
 	});
 });
 
@@ -748,5 +902,81 @@ describe("typed blockers for the client's model", () => {
 		} finally {
 			setLanguage(null);
 		}
+	});
+});
+
+/**
+ * A citation nobody checks is a citation the model can invent, and an invented
+ * source is the one defect the critic cannot catch: it would read a document
+ * that does not exist and call the case perfectly answerable.
+ */
+describe("verifyCaseSource: the bytes a case cites", () => {
+	const KB_PATH = "data/kb/refunds.md";
+	const KB_TEXT = "# Refunds\n\nRefunds are issued within 14 days.\n";
+	const IMPORT_ROWS = "question,answer\nHow long?,14 days\nWho decides?,support\n";
+
+	function fixture() {
+		const base = baseFixtureFiles();
+		const manifest = base.find((file) => file.path === "manifest.yaml")!.content;
+		const projectDir = makeTargetFixture(baseFixtureFiles({
+			// The KB root has to be DECLARED: an undeclared document is not a source
+			// the agent may read, so it is not a source a case may cite either.
+			"manifest.yaml": manifest.replace("evalSuite:", "data: [data/kb]\nevalSuite:"),
+			[KB_PATH]: KB_TEXT,
+			"imports/rows.csv": IMPORT_ROWS,
+			".gitignore": ".ahde/\nruns/\n",
+		}));
+		roots.push(projectDir);
+		return { projectDir, verify: verifyCaseSource(loadTarget(projectDir), projectDir) };
+	}
+
+	it("accepts the declared document at the Target's own revision", () => {
+		const { verify } = fixture();
+		expect(() => verify({ kind: "kb", path: KB_PATH, sha256: sha256(KB_TEXT) })).not.toThrow();
+		expect(() => verify({ kind: "spec" })).not.toThrow();
+	});
+
+	it("refuses a forged digest, naming the field and both values", () => {
+		const { verify } = fixture();
+		const forged = `sha256:${"0".repeat(64)}`;
+		expect(() => verify({ kind: "kb", path: KB_PATH, sha256: forged }))
+			.toThrow(/source\.sha256 for data\/kb\/refunds\.md is sha256:0{64}, but the document/);
+	});
+
+	it("refuses a path outside the declared data/kb roots, and one that is not committed", () => {
+		const { verify } = fixture();
+		expect(() => verify({ kind: "kb", path: "AGENTS.md", sha256: sha256(KB_TEXT) }))
+			.toThrow(/source\.path AGENTS\.md is not under a declared data\/kb root/);
+		expect(() => verify({ kind: "kb", path: "data/kb/absent.md", sha256: sha256(KB_TEXT) }))
+			.toThrow(/source\.path data\/kb\/absent\.md does not exist in the Target at revision/);
+	});
+
+	it("refuses an import row past the end of the file and a changed file", () => {
+		const { verify } = fixture();
+		const digest = sha256(IMPORT_ROWS);
+		expect(() => verify({ kind: "import", path: "imports/rows.csv", sha256: digest, row: 1 })).not.toThrow();
+		expect(() => verify({ kind: "import", path: "imports/rows.csv", sha256: digest, row: 9 }))
+			.toThrow(/source\.row 9 is past the 2 row\(s\) of imports\/rows\.csv/);
+		expect(() => verify({ kind: "import", path: "imports/rows.csv", sha256: `sha256:${"1".repeat(64)}`, row: 0 }))
+			.toThrow(/source\.sha256 for imports\/rows\.csv/);
+	});
+
+	it("refuses a feedback mark nobody wrote, and accepts one that exists", () => {
+		const { projectDir, verify } = fixture();
+		expect(() => verify({ kind: "feedback", at: "2026-09-08T10:00:00.000Z" }))
+			.toThrow(/source\.at 2026-09-08T10:00:00\.000Z names no mark/);
+		writeFileSync(join(projectDir, "imports", "feedback.jsonl"), `${JSON.stringify({
+			messages: [{ role: "user", content: "How long do refunds take?" }],
+			verdict: "bad",
+			at: "2026-09-08T10:00:00.000Z",
+			target: { id: "test-target", gitSha: "0".repeat(40) },
+		})}\n`);
+		expect(() => verify({ kind: "feedback", at: "2026-09-08T10:00:00.000Z" })).not.toThrow();
+	});
+
+	it("refuses the host-minted kinds outright", () => {
+		const { verify } = fixture();
+		expect(() => verify({ kind: "production", traceId: "trace-1" })).toThrow(/host-minted/);
+		expect(() => verify({ kind: "generated", generator: "judge" })).toThrow(/host-minted/);
 	});
 });

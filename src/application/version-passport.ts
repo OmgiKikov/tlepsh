@@ -10,10 +10,10 @@
  *
  * Two surfaces read it, and one module serves both so the page cannot drift:
  *
- *   - `ahde passport --target <dir>` selects a subject (the newest promotion, a
+ *   - `compileVersionPassport` selects a subject (the newest promotion, a
  *     promotion tag, or one candidate id) and refuses with a next step when the
- *     subject or an artifact the page rests on is missing. Its projection is
- *     what `--json` prints, hashes whole.
+ *     subject or an artifact the page rests on is missing. Its projection
+ *     carries every hash whole.
  *   - `/passport [version]` inside Builder Pi describes one *shipped* version of
  *     the project the Workbench already has open. It never refuses over a
  *     missing sibling artifact: it narrows the section and says so under “What
@@ -28,7 +28,7 @@
  * the development corpus's name and case count, and for nothing sealed.
  */
 
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { formatJudgeAgreement, type JudgeAgreementStats } from "../domain/judge-agreement.js";
 import { sealedOutcome, sealedOutcomeLabel, type SealedOutcome } from "../domain/comparison-gate.js";
 import { hasMessage, plural, t, verdictLabel, type MessageKey } from "../i18n.js";
@@ -317,7 +317,7 @@ function builtRevision(record: CandidateRecord): string | null {
 function selectSubject(options: CompileVersionPassportOptions, projectId: string): CandidateRecord {
 	if (options.candidateId !== undefined && options.tag !== undefined) {
 		throw new VersionPassportError(
-			"passport takes --candidate or --tag, not both",
+			"a passport is for one candidate id or one promotion tag, not both",
 			"Name the candidate id, or the promotion tag, or neither for the newest promotion.",
 		);
 	}
@@ -327,7 +327,7 @@ function selectSubject(options: CompileVersionPassportOptions, projectId: string
 		} catch (error) {
 			throw new VersionPassportError(
 				`candidate ${options.candidateId} has no readable record under ${options.runsRoot}`,
-				"Run `ahde list` for the eval runs on this Target, or name a candidate id `ahde candidate` printed.",
+				"Name a version /log lists, or a candidate id the Builder printed.",
 				{ cause: error },
 			);
 		}
@@ -338,7 +338,7 @@ function selectSubject(options: CompileVersionPassportOptions, projectId: string
 		if (!tagged) {
 			throw new VersionPassportError(
 				`no promoted candidate of project ${projectId} carries the tag ${options.tag}`,
-				"Run `ahde passport --target <dir>` for the newest promotion, or name a tag `ahde promote` printed.",
+				"Name a version /log lists; /passport alone describes the newest shipped one.",
 			);
 		}
 		return tagged;
@@ -347,8 +347,8 @@ function selectSubject(options: CompileVersionPassportOptions, projectId: string
 	if (!promoted) {
 		throw new VersionPassportError(
 			`project ${projectId} has no promoted candidate to issue a passport for`,
-			"Promote one with `ahde promote --target <dir> --candidate <id> --to 0.X.0 --reason …`, " +
-				"or pass --candidate <id> to issue a verified-only passport for an evaluated candidate.",
+			"Ship one first (/ship <version> in Builder Pi), " +
+				"or name an evaluated candidate id for a verified-only passport.",
 		);
 	}
 	return promoted;
@@ -432,8 +432,11 @@ function noiseBand(
 ): PassportNoiseBand | null {
 	for (const record of projectRecords(runsRoot, projectId)) {
 		if (record.mode !== "aa-calibration") continue;
-		const projection = calibrationProjection(record);
+		const projection = calibrationProjection(record, runsRoot);
 		if (!projection || !revisions.includes(projection.targetSha)) continue;
+		// A pair whose second arm ran the alternate user model measured the
+		// simulator, not this revision: it is never the passport's noise band.
+		if (projection.simulator) continue;
 		return {
 			candidateId: projection.candidateId,
 			targetSha: projection.targetSha,
@@ -554,7 +557,7 @@ function compileTargetPassport(options: CompileVersionPassportOptions): VersionP
 	if (!evaluated || !candidateSha) {
 		throw new VersionPassportError(
 			`candidate ${record.candidateId} was never evaluated; there is nothing measured to put beside the promise`,
-			"Verify it first with `ahde candidate --target <dir> --builder-run <id>`.",
+			"Test it first (/test in Builder Pi); a passport needs a measured candidate.",
 		);
 	}
 	// The promise is read first: a page that cannot say what was promised is not

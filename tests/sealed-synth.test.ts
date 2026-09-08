@@ -43,9 +43,15 @@ const DEV_CASES = [
 	{ id: "dev-4", input: "Объясни клиенту сроки рассмотрения.", graders: [{ type: "output_contains", text: "срок" }] },
 ];
 
+/** The Spec's jobs are the rows of the coverage matrix, so the fixture has some. */
+const SPEC_JOBS = ["Ответить по договору", "Классифицировать обращение"];
+
 const SPEC_MD = `# Support answer agent
 
 Отвечает на обращения клиентов банка по договорам и ДБО.
+
+## Jobs
+${SPEC_JOBS.map((job) => `- ${job}`).join("\n")}
 
 ## Success criteria
 - ответ содержит срок
@@ -126,23 +132,89 @@ function kbPairs(passageId: string, asked: number): { question: string; answer: 
 }
 
 /**
- * A judge that answers every passage with exactly as many distinct
- * question-and-answer pairs as the prompt asked it for.
+ * One judge answers two questions now: it writes the exam, and then it reviews
+ * what it wrote. The two are told apart by the system prompt — the critic's
+ * begins with the sentence below — because that is the only thing the host
+ * varies between them.
  */
-async function mockKbJudge(overrides: Record<string, string> = {}): Promise<MockModelHandle> {
+const CRITIC_SYSTEM_MARK = "You review evaluation cases";
+
+interface MockVerdict {
+	verdict: "valid" | "repair" | "invalid";
+	reasons?: string[];
+}
+/** What the mock critic says about one case, by the case's own request text. */
+type CriticRule = (input: string) => MockVerdict | undefined;
+
+/** The cases one critic prompt carries, in prompt order. */
+function criticPromptCases(user: string): { index: number; input: string }[] {
+	const block = /# Case (\d+) \(id [^)]*\)\n(?:coverage: [^\n]*\n)?input: ([^\n]*)/gu;
+	return [...user.matchAll(block)].map((match) => ({ index: Number(match[1]), input: match[2] ?? "" }));
+}
+
+/** One finding per case in the batch; `valid` unless the rule says otherwise. */
+function criticReply(user: string, rule: CriticRule | undefined): string {
+	return JSON.stringify({
+		findings: criticPromptCases(user).map(({ index, input }) => {
+			const decided = rule?.(input) ?? { verdict: "valid" as const };
+			return { case: index, verdict: decided.verdict, reasons: decided.reasons ?? [] };
+		}),
+	});
+}
+
+/** The mock as this file uses it: an endpoint, and what it was asked for. */
+interface JudgeMock {
+	url: string;
+	/** Every request, generation and critic alike. */
+	requests: () => number;
+	/** Generation requests only — the critic asks once per batch of eight. */
+	generations: () => number;
+}
+
+async function mockJudgeModel(options: {
+	generate: (firstUser: string) => string;
+	critic?: CriticRule;
+}): Promise<JudgeMock> {
+	let generations = 0;
 	const mock = await startMockModel([{
 		match: () => true,
-		resolve: ({ firstUser }) => {
-			const passageId = /# Passage (\S+)/.exec(firstUser)?.[1] ?? "";
-			const override = overrides[passageId];
-			if (override !== undefined) return { text: override };
-			const asked = Number(/Write (\d+) different/.exec(firstUser)?.[1] ?? "1");
-			return { text: JSON.stringify({ questions: kbPairs(passageId, asked) }) };
+		resolve: ({ system, firstUser }) => {
+			if (system.startsWith(CRITIC_SYSTEM_MARK)) return { text: criticReply(firstUser, options.critic) };
+			generations += 1;
+			return { text: options.generate(firstUser) };
 		},
 		steps: [],
 	}]);
 	mocks.push(mock);
-	return mock;
+	return { url: mock.url, requests: () => mock.requests(), generations: () => generations };
+}
+
+/**
+ * A judge that answers every passage with exactly as many distinct
+ * question-and-answer pairs as the prompt asked it for, plus the no-answer
+ * question when the prompt asks for one.
+ */
+async function mockKbJudge(overrides: Record<string, string> = {}, critic?: CriticRule): Promise<JudgeMock> {
+	return mockJudgeModel({
+		generate: (firstUser) => {
+			const passageId = /# Passage (\S+)/.exec(firstUser)?.[1] ?? "";
+			const override = overrides[passageId];
+			if (override !== undefined) return override;
+			const asked = Number(/Write (\d+) different/.exec(firstUser)?.[1] ?? "1");
+			return JSON.stringify({
+				questions: kbPairs(passageId, asked),
+				...(firstUser.includes("no-answer question")
+					? {
+						noAnswer: {
+							question: `${SENTINEL} Сколько стоит доставка по отрывку ${passageId}?`,
+							invented: `${SENTINEL} 1234 рубля за ${passageId}`,
+						},
+					}
+					: {}),
+			});
+		},
+		...(critic ? { critic } : {}),
+	});
 }
 
 interface Fixture {
@@ -192,11 +264,13 @@ function generated(count: number, extra: readonly unknown[] = []): string {
 	return JSON.stringify({ cases: [...cases, ...extra] });
 }
 
-async function mockJudge(text: string): Promise<MockModelHandle> {
-	const mock = await startMockModel([{ match: () => true, steps: [{ text }] }]);
-	mocks.push(mock);
-	return mock;
+/** A judge that answers every generation with the same text. */
+async function mockJudge(text: string, critic?: CriticRule): Promise<JudgeMock> {
+	return mockJudgeModel({ generate: () => text, ...(critic ? { critic } : {}) });
 }
+
+/** One deterministic check, the shape the development suite already uses. */
+const DETERMINISTIC = [{ type: "output_contains", text: "срок" }];
 
 describe("sealed synthetic generation", () => {
 	it("seals N generated cases and prints nothing about them", async () => {
@@ -260,10 +334,10 @@ describe("sealed synthetic generation", () => {
 		});
 
 		const receipt = result.receipt;
-		expect(receipt.schemaVersion).toBe(3);
+		expect(receipt.schemaVersion).toBe(4);
 		expect(sealedSynthSource(receipt)).toBe("spec");
-		expect(receipt.schemaVersion === 3 && receipt.kbIndexHash).toBeNull();
-		expect(receipt.schemaVersion === 3 && receipt.kbChunkChars).toBeNull();
+		expect(receipt.schemaVersion === 4 && receipt.kbIndexHash).toBeNull();
+		expect(receipt.schemaVersion === 4 && receipt.kbChunkChars).toBeNull();
 		expect(receipt.targetId).toBe("test-target");
 		expect(receipt.generator.provider).toBe("fixture-provider");
 		expect(receipt.generator.id).toBe("fixture-judge");
@@ -335,14 +409,12 @@ describe("sealed synthetic generation", () => {
 
 	it("shows the generator the world a development case happens in, and states it once", async () => {
 		const prompts: string[] = [];
-		const mock = await startMockModel([{
-			match: ({ firstUser }) => {
+		const mock = await mockJudgeModel({
+			generate: (firstUser) => {
 				prompts.push(firstUser);
-				return true;
+				return generated(2);
 			},
-			steps: [{ text: generated(2) }],
-		}]);
-		mocks.push(mock);
+		});
 		const worlded = fixture({
 			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
 			cases: [
@@ -527,8 +599,7 @@ describe("sealed synthetic generation", () => {
 		const rendered = renderSealedSynthOutput(result);
 		expect(rendered.stdout.join("\n")).not.toContain(SENTINEL);
 		expect(rendered.stdout.join("\n")).toContain(reviewPath);
-		expect(rendered.stdout.join("\n")).toContain("ahde corpus import");
-		expect(rendered.stdout.join("\n")).toContain("--visibility sealed");
+		expect(rendered.stdout.join("\n")).toContain("/holdout");
 		expect(result.receipt.outcome).toEqual({ kind: "review", reviewPath, caseCount: 3 });
 	});
 
@@ -570,6 +641,24 @@ describe("sealed synthetic generation", () => {
 			}),
 		).rejects.toMatchObject({ name: "SealedSynthRefusal", message: expect.stringContaining("already exists") });
 		expect(readFileSync(reviewPath, "utf8")).toBe("{}\n");
+
+		// The critic's verdicts land beside the draft and are written the same
+		// immutable way, so a leftover one is refused before anything is spent
+		// rather than after the draft is on disk and its receipt is not.
+		const fresh = join(outside, "fresh.jsonl");
+		writeFileSync(`${fresh}.critic.jsonl`, "{}\n");
+		await expect(
+			synthesizeSealedCorpus({
+				targetDir,
+				stateRoot,
+				projectId: "project",
+				name: "exam",
+				count: 3,
+				reviewPath: fresh,
+				now: () => at,
+			}),
+		).rejects.toMatchObject({ name: "SealedSynthRefusal", message: expect.stringContaining("critic verdicts") });
+		expect(existsSync(fresh)).toBe(false);
 	});
 
 	it("fails without sealing when the generator returns nothing usable", async () => {
@@ -697,12 +786,12 @@ describe("an exam written from the knowledge base", () => {
 		}
 
 		const receipt = result.receipt;
-		expect(receipt.schemaVersion).toBe(3);
+		expect(receipt.schemaVersion).toBe(4);
 		expect(sealedSynthSource(receipt)).toBe("kb");
-		expect(receipt.schemaVersion === 3 && receipt.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		expect(receipt.schemaVersion === 4 && receipt.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
 		// Three questions fit in three runtime passages, so the base was read at
 		// the runtime geometry and the receipt says so.
-		expect(receipt.schemaVersion === 3 && receipt.kbChunkChars).toBe(KB_CHUNK_CHARS);
+		expect(receipt.schemaVersion === 4 && receipt.kbChunkChars).toBe(KB_CHUNK_CHARS);
 		expect(receipt.requested).toBe(3);
 		// Nothing about a case reaches the receipt or anything an operator reads.
 		const visible = JSON.stringify(receipt) + renderSealedSynthOutput(result).stdout.join("\n");
@@ -839,18 +928,30 @@ describe("an exam written from the knowledge base", () => {
 			now: () => at,
 		});
 		expect(result.accepted).toBe(9);
-		expect(mock.requests()).toBe(3);
+		// One call per passage rather than one per question; the critic's own two
+		// calls are not generation.
+		expect(mock.generations()).toBe(3);
 		const loaded = loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id });
-		// Nine distinct questions, three per passage, every one citing its chunk.
+		// Nine distinct questions, three per passage, every one written from its chunk.
 		expect(new Set(loaded.tasks.map((task) => task.input)).size).toBe(9);
 		const perChunk = new Map<string, number>();
 		for (const task of loaded.tasks) {
 			const chunk = String(task.metadata?.kbChunk);
 			expect(["a.md#0", "b.md#0", "c.md#0"]).toContain(chunk);
-			expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			// Every third passage spends one question on a fact it does not state,
+			// and that one is checked by what the answer must NOT say.
+			expect(task.graders?.[0]).toEqual(
+				task.expected === undefined
+					? { type: "output_excludes", text: expect.stringContaining("1234 рубля"), caseSensitive: false }
+					: { type: "cites_source", chunk, minOverlap: 0.35 },
+			);
 			perChunk.set(chunk, (perChunk.get(chunk) ?? 0) + 1);
 		}
 		expect([...perChunk.values()]).toEqual([3, 3, 3]);
+		// Exactly one trap in a three-passage exam, and it is labelled as one.
+		const traps = loaded.tasks.filter((task) => task.expected === undefined);
+		expect(traps).toHaveLength(1);
+		expect(traps[0]?.coverage).toEqual({ job: SPEC_JOBS[0], difficulty: "no-answer" });
 	});
 
 	it("reads a base too small for the exam at a finer geometry, and records the length", async () => {
@@ -876,10 +977,10 @@ describe("an exam written from the knowledge base", () => {
 		expect(result.droppedMalformed).toBe(0);
 
 		const receipt = result.receipt;
-		expect(receipt.schemaVersion === 3 && receipt.kbChunkChars).toBe(KB_CHUNK_CHARS / 2);
+		expect(receipt.schemaVersion === 4 && receipt.kbChunkChars).toBe(KB_CHUNK_CHARS / 2);
 		// The index hash still describes the RUNTIME index: the finer read is the
 		// generator's, and the receipt's chunk length is what makes it readable.
-		expect(receipt.schemaVersion === 3 && receipt.kbIndexHash)
+		expect(receipt.schemaVersion === 4 && receipt.kbIndexHash)
 			.toBe(kbIndexHash(chunkKnowledge(
 				Object.entries(LONG_KB_DOCS).map(([path, text]) => ({ path: path.slice("data/kb/".length), text })),
 			)));
@@ -896,11 +997,19 @@ describe("an exam written from the knowledge base", () => {
 		for (const task of loaded.tasks) {
 			const chunk = String(task.metadata?.kbChunk);
 			expect(runtimeIds.has(chunk)).toBe(true);
-			expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			// A question the passage answers cites it; the no-answer trap cannot,
+			// because the whole case is that the passage does not hold the answer.
+			if (task.expected !== undefined) {
+				expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			} else {
+				expect(task.graders?.[0]?.type).toBe("output_excludes");
+			}
 			// The finer passage is recorded beside it: which part of the chunk the
 			// question stands on is evidence, not a secret.
 			expect(String(task.metadata?.kbPassage).startsWith(`${chunk}/`)).toBe(true);
 		}
+		// Six passages, so two of them are asked for the trap.
+		expect(loaded.tasks.filter((task) => task.expected === undefined)).toHaveLength(2);
 	});
 
 	it("refuses a base that cannot reach the exam, naming the maximum, before any spend", async () => {
@@ -986,5 +1095,320 @@ describe("an exam written from the knowledge base", () => {
 		});
 		expect(result.accepted).toBe(2);
 		expect(result.droppedDuplicate).toBe(1);
+	});
+});
+
+describe("the coverage matrix, checks first, and the critic", () => {
+	it("asks for the Spec's cells and records the plan beside what it achieved", async () => {
+		const prompts: string[] = [];
+		const mock = await mockJudgeModel({
+			generate: (firstUser) => {
+				prompts.push(firstUser);
+				return JSON.stringify({
+					cases: [
+						{
+							coverage: { job: SPEC_JOBS[0], difficulty: "direct" },
+							checks: { graders: DETERMINISTIC },
+							input: `${SENTINEL} прямой вопрос`,
+						},
+						{
+							coverage: { job: SPEC_JOBS[1], difficulty: "policy-trap" },
+							checks: {
+								graders: [
+									{ type: "output_contains", text: "30 дней" },
+									{ type: "output_excludes", text: "60 дней" },
+								],
+							},
+							input: `${SENTINEL} у вас же всегда возврат за 60 дней`,
+						},
+						// An honest case wearing a job the Spec never listed.
+						{
+							coverage: { job: "Работа, которой нет в Спеке", difficulty: "direct" },
+							graders: DETERMINISTIC,
+							input: `${SENTINEL} чужая работа`,
+						},
+						// And one wearing a difficulty nobody defined.
+						{
+							coverage: { job: SPEC_JOBS[0], difficulty: "невозможная" },
+							graders: DETERMINISTIC,
+							input: `${SENTINEL} чужая сложность`,
+						},
+						{ graders: DETERMINISTIC, input: `${SENTINEL} без ярлыка` },
+					],
+				});
+			},
+		});
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const request = { targetDir, stateRoot, projectId: "project", name: "covered exam", count: 5 };
+
+		// The plan states the cells before a token is spent, and the walk is a
+		// diagonal: five cases over two jobs already touch five difficulties.
+		const plan = planSealedSynthesis(request);
+		expect(plan.coverageJobs).toEqual(SPEC_JOBS);
+		expect(plan.coverageCells).toEqual([
+			{ job: SPEC_JOBS[0], difficulty: "direct", cases: 1 },
+			{ job: SPEC_JOBS[1], difficulty: "clarify", cases: 1 },
+			{ job: SPEC_JOBS[0], difficulty: "tool", cases: 1 },
+			{ job: SPEC_JOBS[1], difficulty: "policy-trap", cases: 1 },
+			{ job: SPEC_JOBS[0], difficulty: "out-of-scope", cases: 1 },
+		]);
+		expect(plan.criticCalls).toBe(1);
+
+		const result = await synthesizeSealedCorpus({ ...request, now: () => at });
+		// Every case is kept: a label nobody declared costs the label, not the case.
+		expect(result.accepted).toBe(5);
+		expect(result.coverage.jobs).toEqual(SPEC_JOBS);
+		expect(result.coverage.plan).toEqual(plan.coverageCells);
+		expect(result.coverage.achieved).toEqual([
+			{ job: SPEC_JOBS[0], difficulty: "direct", cases: 1 },
+			{ job: SPEC_JOBS[1], difficulty: "policy-trap", cases: 1 },
+		]);
+		expect(result.coverage.unlabelled).toBe(3);
+		expect(result.coverage.droppedLabel).toBe(2);
+		expect(result.receipt.schemaVersion === 4 && result.receipt.coverage).toEqual(result.coverage);
+
+		// The generator was told the rows, the cells and the traps.
+		const prompt = prompts[0] ?? "";
+		for (const job of SPEC_JOBS) expect(prompt).toContain(`- ${job}`);
+		expect(prompt).toContain(`- ${SPEC_JOBS[1]} × policy-trap: 1`);
+		expect(prompt).toContain("Checks first, then the request.");
+		// `output_excludes` is offered whether or not the suite already uses it;
+		// a trap the prompt forbids the shape of is not a trap.
+		expect(prompt).toContain("\"type\":\"output_excludes\"");
+
+		// The cells reached the cases themselves, and nothing else did.
+		const loaded = loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id });
+		const labelled = loaded.tasks.filter((task) => task.coverage !== undefined);
+		expect(labelled).toHaveLength(2);
+		expect(labelled.every((task) => SPEC_JOBS.includes(task.coverage!.job))).toBe(true);
+		// Every generated case says where it came from, and the host stamped it.
+		expect(loaded.tasks.every((task) =>
+			task.source?.kind === "generated" && task.source.generator === "judge"
+		)).toBe(true);
+		const visible = [...renderSealedSynthOutput(result).stdout, ...renderSealedSynthOutput(result).warnings].join("\n");
+		expect(visible).not.toContain(SENTINEL);
+		expect(JSON.stringify(result.receipt)).not.toContain(SENTINEL);
+	});
+
+	it("reads the checks-first shape and the flat shape alike", async () => {
+		const mock = await mockJudge(JSON.stringify({
+			cases: [
+				{
+					coverage: { job: SPEC_JOBS[0], difficulty: "tool" },
+					checks: {
+						graders: [{ type: "output_contains", text: "заморожен" }],
+						world: {
+							state: { accounts: { "42": { status: "ok" } } },
+							expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+						},
+						expected: "Договор 42 заморожен",
+					},
+					input: `${SENTINEL} заморозь договор 42`,
+				},
+				// The older flat shape is still a correct answer, and still admitted.
+				{ input: `${SENTINEL} плоская форма`, expected: "срок 30 дней", graders: DETERMINISTIC },
+			],
+		}));
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "checks first",
+			count: 2,
+			now: () => at,
+		});
+		expect(result.accepted).toBe(2);
+		expect(result.droppedMalformed).toBe(0);
+
+		const loaded = loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id });
+		const worlded = loaded.tasks.find((task) => task.world !== undefined)!;
+		// The checks came out of `checks` and onto the case, all three of them.
+		expect(worlded.graders).toEqual([{ type: "output_contains", text: "заморожен", caseSensitive: false }]);
+		expect(worlded.expected).toBe("Договор 42 заморожен");
+		expect(worlded.world?.expect).toEqual([{ path: "accounts.42.status", op: "equals", value: "frozen" }]);
+		expect(worlded.coverage).toEqual({ job: SPEC_JOBS[0], difficulty: "tool" });
+		const flat = loaded.tasks.find((task) => task.world === undefined)!;
+		expect(flat.expected).toBe("срок 30 дней");
+		expect(flat.graders?.[0]?.type).toBe("output_contains");
+	});
+
+	it("drops a case only a model could mark, and keeps one a world decides", async () => {
+		const mock = await mockJudge(JSON.stringify({
+			cases: [
+				{ input: `${SENTINEL} проверяемый`, graders: DETERMINISTIC },
+				// Nothing but an opinion behind it: dropped before the critic is asked.
+				{ input: `${SENTINEL} только судья`, graders: [{ type: "judge", rubric: "вежливо ли" }] },
+				// A judge grader is fine beside a world the run can check.
+				{
+					input: `${SENTINEL} судья и мир`,
+					graders: [{ type: "judge", rubric: "вежливо ли" }],
+					world: {
+						state: { orders: { "7": { status: "new" } } },
+						expect: [{ path: "orders.7.status", op: "equals", value: "shipped" }],
+					},
+				},
+			],
+		}));
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "judge only",
+			count: 3,
+			now: () => at,
+		});
+		expect(result.accepted).toBe(2);
+		expect(result.critic?.dropped).toBe(1);
+		expect(result.critic?.byCategory["judge-only"]).toBe(1);
+		expect(result.receipt.schemaVersion === 4 && result.receipt.critic?.byCategory["judge-only"]).toBe(1);
+		const warnings = renderSealedSynthOutput(result).warnings.join("\n");
+		expect(warnings).toContain("1 generated case(s) failed the critic and were not sealed: judge-only 1");
+		expect(warnings).not.toContain(SENTINEL);
+	});
+
+	it("drops what the critic rejects when sealing, in categories and never in its words", async () => {
+		const mock = await mockJudge(
+			JSON.stringify({
+				cases: [
+					{ input: `${SENTINEL} годный кейс`, graders: DETERMINISTIC },
+					{ input: `${SENTINEL} безответный кейс`, graders: DETERMINISTIC },
+					{ input: `${SENTINEL} повторный кейс`, graders: DETERMINISTIC },
+					{ input: `${SENTINEL} кривая проверка`, graders: DETERMINISTIC },
+				],
+			}),
+			(input) => {
+				// The critic quotes the case it is talking about — which is exactly
+				// why none of this text may reach a receipt or a warning.
+				if (input.includes("безответный")) {
+					return { verdict: "invalid", reasons: [`the specification does not state a window for ${input}`] };
+				}
+				if (input.includes("повторный")) {
+					return { verdict: "invalid", reasons: [`duplicates another case: ${input}`] };
+				}
+				if (input.includes("кривая")) {
+					return { verdict: "repair", reasons: [`the grader compares against the wrong reference in ${input}`] };
+				}
+				return undefined;
+			},
+		);
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "critic exam",
+			count: 4,
+			now: () => at,
+		});
+
+		// A sealed exam is never patched by a model nobody reads, so `repair` goes
+		// with `invalid`.
+		expect(result.accepted).toBe(1);
+		expect(result.corpus?.taskCount).toBe(1);
+		expect(result.critic).toMatchObject({ reviewed: 4, dropped: 3 });
+		expect(result.critic?.byCategory).toMatchObject({
+			unanswerable: 1,
+			duplicate: 1,
+			"wrong-check": 1,
+			"judge-only": 0,
+			other: 0,
+		});
+		expect(result.critic?.spend.calls).toBeGreaterThan(0);
+
+		const rendered = renderSealedSynthOutput(result);
+		const visible = [...rendered.stdout, ...rendered.warnings].join("\n");
+		expect(visible).toContain(
+			"3 generated case(s) failed the critic and were not sealed: unanswerable 1, wrong-check 1, duplicate 1",
+		);
+		// Not the critic's prose, not the case, not one word of either.
+		expect(visible).not.toContain(SENTINEL);
+		expect(visible).not.toContain("does not state a window");
+		expect(JSON.stringify(result.receipt)).not.toContain(SENTINEL);
+		expect(readFileSync(result.receiptPath, "utf8")).not.toContain("wrong reference");
+	});
+
+	it("keeps every case on the review path and writes the verdicts beside them", async () => {
+		const mock = await mockJudge(
+			JSON.stringify({
+				cases: [
+					{ input: `${SENTINEL} годный кейс`, graders: DETERMINISTIC },
+					{ input: `${SENTINEL} безответный кейс`, graders: DETERMINISTIC },
+					{ input: `${SENTINEL} кривая проверка`, graders: DETERMINISTIC },
+				],
+			}),
+			(input) => {
+				if (input.includes("безответный")) {
+					return { verdict: "invalid", reasons: [`the specification does not state it: ${input}`] };
+				}
+				if (input.includes("кривая")) {
+					return { verdict: "repair", reasons: [`the grader is wrong: ${input}`] };
+				}
+				return undefined;
+			},
+		);
+		const { targetDir, stateRoot, outside } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const reviewPath = join(outside, "draft.jsonl");
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "reviewed exam",
+			count: 3,
+			reviewPath,
+			now: () => at,
+		});
+
+		// Nothing is dropped: the human is the reader, and they decide.
+		expect(result.accepted).toBe(3);
+		expect(result.critic).toMatchObject({ reviewed: 3, dropped: 0 });
+		expect(readFileSync(reviewPath, "utf8").trim().split("\n")).toHaveLength(3);
+
+		const annotations = `${reviewPath}.critic.jsonl`;
+		expect(result.criticAnnotationsPath).toBe(annotations);
+		// The operator is told the second file exists; it is a path, not a case.
+		expect(renderSealedSynthOutput(result).warnings.join("\n")).toContain(`critic verdicts ${annotations}`);
+		expect(existsSync(annotations)).toBe(true);
+		expect(statSync(annotations).mode & 0o777).toBe(0o600);
+		const flagged = readFileSync(annotations, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		expect(flagged).toHaveLength(2);
+		expect(flagged.map((finding) => finding.verdict).sort()).toEqual(["invalid", "repair"]);
+		expect(flagged.map((finding) => finding.category).sort()).toEqual(["unanswerable", "wrong-check"]);
+		for (const finding of flagged) expect(finding.taskId).toMatch(/^synth-[0-9a-f]{24}$/);
+		// The verdicts name the case by id and say nothing the critic wrote: the
+		// draft beside them holds the cases, and this file holds no second copy.
+		const written = readFileSync(annotations, "utf8");
+		expect(written).not.toContain(SENTINEL);
+		expect(written).not.toContain("the grader is wrong");
+		// Nothing was dropped, so nothing warns about the critic.
+		expect(renderSealedSynthOutput(result).warnings.join("\n")).not.toContain("failed the critic");
+	});
+
+	it("prices the critic's calls in the plan", async () => {
+		const mock = await mockJudge(generated(20));
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const plan = planSealedSynthesis({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "priced exam",
+			count: 20,
+		});
+		// One critic call per batch of eight, and the batches are the run's own.
+		expect(plan.criticCalls).toBe(3);
+		expect(plan.estimatedCostUsd).toBeGreaterThanOrEqual(0);
 	});
 });

@@ -166,6 +166,110 @@ function seedBuilderSettings(agentDir: string): void {
 	writeTextArtifact(path, `${JSON.stringify(settings, null, "\t")}\n`, { mode: 0o600 });
 }
 
+/**
+ * Route OpenRouter's Anthropic models through chat completions.
+ *
+ * Pi's hydrated OpenRouter catalog lists Anthropic models as `anthropic-messages`
+ * under `https://openrouter.ai/api`, but its runtime dispatches a request by
+ * PROVIDER, and the OpenRouter provider speaks chat completions: the request
+ * goes to `https://openrouter.ai/api/chat/completions` and OpenRouter answers
+ * with a 404 page (live session 10, Sonnet 4.5 and 4.6 alike). So «give the
+ * Builder a Sonnet-class model» did not work on the one provider most operators
+ * have. Until the vendored Pi dispatches by the model's own api, every such
+ * catalog entry is overridden in the Builder's own `models.json` with the api
+ * and base URL OpenRouter actually serves — the same route its Qwen and Kimi
+ * entries already take. An entry the operator wrote themselves is never touched;
+ * ours are listed under {@link OPENROUTER_CHAT_OVERRIDES_KEY} and re-derived on
+ * every launch, so a catalog hydrated later cannot outgrow them. The catalog is
+ * written by Pi at startup, so the first launch on a fresh machine runs without
+ * the overrides and every later one has them.
+ */
+const OPENROUTER_CHAT_BASE_URL = "https://openrouter.ai/api/v1";
+export const OPENROUTER_CHAT_OVERRIDES_KEY = "ahdeOpenRouterChatOverrides";
+
+type CatalogEntry = Record<string, unknown> & { id: string };
+
+function catalogEntries(value: unknown, provider: string): CatalogEntry[] {
+	const models = (value as { [provider: string]: { models?: unknown } } | null)?.[provider]?.models;
+	return Array.isArray(models)
+		? models.filter((entry): entry is CatalogEntry => typeof entry === "object" && entry !== null && typeof (entry as { id?: unknown }).id === "string")
+		: [];
+}
+
+/** The chat-completions twin of one anthropic-messages catalog entry. */
+function chatCompletionsTwin(entry: CatalogEntry): CatalogEntry {
+	const keep = ["id", "name", "input", "reasoning", "contextWindow", "maxTokens", "cost"] as const;
+	return {
+		...Object.fromEntries(keep.filter((key) => key in entry).map((key) => [key, entry[key]])),
+		id: entry.id,
+		api: "openai-completions",
+		baseUrl: OPENROUTER_CHAT_BASE_URL,
+		compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter" },
+	};
+}
+
+/**
+ * The `models.json` the Builder home should hold, given the catalog Pi hydrated
+ * and whatever is there now. Pure. Null when nothing has to change: the file is
+ * the operator's, and it is rewritten only for a reason.
+ */
+export function mergeOpenRouterChatOverrides(existing: unknown, store: unknown): Record<string, unknown> | null {
+	const current = typeof existing === "object" && existing !== null && !Array.isArray(existing)
+		? existing as Record<string, unknown>
+		: {};
+	const managed = new Set(Array.isArray(current[OPENROUTER_CHAT_OVERRIDES_KEY])
+		? (current[OPENROUTER_CHAT_OVERRIDES_KEY] as unknown[]).filter((id): id is string => typeof id === "string")
+		: []);
+	const overrides = catalogEntries(store, "openrouter")
+		.filter((entry) => entry.api === "anthropic-messages")
+		.map(chatCompletionsTwin);
+	const providers = typeof current.providers === "object" && current.providers !== null && !Array.isArray(current.providers)
+		? current.providers as Record<string, unknown>
+		: {};
+	const openrouter = typeof providers.openrouter === "object" && providers.openrouter !== null && !Array.isArray(providers.openrouter)
+		? providers.openrouter as Record<string, unknown>
+		: {};
+	// The operator's own entries stay exactly as written and win over ours by id.
+	const operatorEntries = catalogEntries(providers, "openrouter").filter((entry) => !managed.has(entry.id));
+	const operatorIds = new Set(operatorEntries.map((entry) => entry.id));
+	const ours = overrides.filter((entry) => !operatorIds.has(entry.id));
+	if (ours.length === 0 && managed.size === 0) return null;
+	const models = [...operatorEntries, ...ours];
+	const next: Record<string, unknown> = { ...current };
+	if (ours.length > 0) {
+		next.providers = { ...providers, openrouter: { ...openrouter, models } };
+		next[OPENROUTER_CHAT_OVERRIDES_KEY] = ours.map((entry) => entry.id);
+	} else {
+		if (models.length > 0) next.providers = { ...providers, openrouter: { ...openrouter, models } };
+		else {
+			const { models: _models, ...rest } = openrouter;
+			const { openrouter: _openrouter, ...otherProviders } = providers;
+			next.providers = Object.keys(rest).length > 0 ? { ...otherProviders, openrouter: rest } : otherProviders;
+		}
+		delete next[OPENROUTER_CHAT_OVERRIDES_KEY];
+	}
+	return JSON.stringify(next) === JSON.stringify(current) ? null : next;
+}
+
+function readJsonFile(path: string): unknown {
+	if (!isRegularFile(path)) return undefined;
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+function seedOpenRouterChatOverrides(agentDir: string): void {
+	const store = readJsonFile(join(agentDir, "models-store.json"));
+	if (store === undefined) return;
+	const path = join(agentDir, "models.json");
+	// An unparseable file is the operator's problem to notice, never ours to replace.
+	if (pathExists(path) && readJsonFile(path) === undefined) return;
+	const next = mergeOpenRouterChatOverrides(readJsonFile(path), store);
+	if (next) writeTextArtifact(path, `${JSON.stringify(next, null, "\t")}\n`, { mode: 0o600 });
+}
+
 export function resolveBuilderAssets(packageRoot = PACKAGE_ROOT): BuilderAssets {
 	const root = resolve(packageRoot, "builders", "ahde");
 	if (!existsSync(root) || !lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()) {
@@ -363,6 +467,7 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 	const agentDir = ensurePrivateDirectory(join(builderHome, "config"));
 	migrateLegacyBuilderConfig(join(privateRoot, "config"), agentDir);
 	seedBuilderSettings(agentDir);
+	seedOpenRouterChatOverrides(agentDir);
 	const assets = resolveBuilderAssets(options.packageRoot);
 	const runMain = options.main ?? piMain;
 

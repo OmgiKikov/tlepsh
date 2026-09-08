@@ -2,19 +2,34 @@
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
 import { plural as localizedCount, t } from "../../i18n.js";
-import { loadDevelopmentCorpusPublicationReceipt } from "../../application/builder-authoring.js";
-import { MAX_BUILDER_CORPUS_DRAFT_TASKS } from "../../application/builder-corpus-draft.js";
-import { type DatasetHoldoutSpec } from "../../application/dataset-ingest.js";
+import { loadDevelopmentCorpusPublicationReceipt, approveBuilderSpecDraft, describeDevelopmentCorpusPublication } from "../../application/builder-authoring.js";
+import { MAX_BUILDER_CORPUS_DRAFT_TASKS, createBuilderCorpusDraft } from "../../application/builder-corpus-draft.js";
+import { type DatasetHoldoutSpec, compileDatasetCases, ingestDataset } from "../../application/dataset-ingest.js";
 import { assertGradersRunnable, targetToolContext } from "../../application/corpus-target.js";
-import { listCorpora, type CorpusMetadata } from "../../corpus.js";
+import { listCorpora, loadCorpus, type CorpusMetadata, type CorpusTask } from "../../corpus.js";
 import { hashValue } from "../../provenance.js";
 import { loadApprovedSpec } from "../../spec.js";
-import { recordWorkbenchCorpusPublication } from "../corpus-publication.js";
+import {
+	assertCriticApproves,
+	criticProjection,
+	recordWorkbenchCorpusPublication,
+	requireCurrentCorpusSources,
+} from "../corpus-publication.js";
 import { WorkbenchStaleDecisionError } from "../errors.js";
-import { requireApprovedSpec, requireCorpusDraft, requireSpecDraft } from "../resolution.js";
+import {
+	requireApprovedSpec,
+	requireCorpusDraft,
+	requireDevelopmentCorpus,
+	requireSpecDraft,
+} from "../resolution.js";
+import { critiqueCases, saveCriticReceipt, specTextOf, type CriticCase, CRITIC_BATCH_SIZE } from "../../application/case-critic.js";
+import { caseSourceReader, type CaseSourceReading } from "../../application/corpus-source.js";
+import type { CaseSource } from "../../manifest.js";
+import { projectStateDir } from "../../storage/paths.js";
 import { exactSame, datasetCasePreview, MAX_DATASET_SAMPLE_CASES, GENERATED_HOLDOUT_NAME } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
+import { sealedSynthReviewPath, synthesizeSealedCorpus } from "../../application/sealed-synth.js";
 
 export async function decideApproveSpec(
 	host: DecisionHost,
@@ -31,7 +46,7 @@ export async function decideApproveSpec(
 	const afterDescription = host.dependencies.describeSpecApproval(host.stateRoot, host.projectId, draft.id);
 	const after = { ...afterDescription, spec: reloadedDraft.spec };
 	if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-	const result = host.dependencies.approveSpecDraft({ stateRoot: host.stateRoot, projectId: host.projectId, draftSpecId: draft.id, expectedDraftSnapshotHash: beforeDescription.draftSnapshotHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: host.dependencies.now });
+	const result = approveBuilderSpecDraft({ stateRoot: host.stateRoot, projectId: host.projectId, draftSpecId: draft.id, expectedDraftSnapshotHash: beforeDescription.draftSnapshotHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: host.dependencies.now });
 	const settled = host.select("approved-spec", result.approved.id);
 	return { kind: input.kind, message: t("message.spec-approved"), result: { approvedSpecId: result.approved.id, receiptId: result.receipt.id }, view: await host.viewOf(settled) };
 }
@@ -44,16 +59,25 @@ export async function decidePublishCorpus(
 	const { inventory, gate, options } = ctx;
 	const approved = requireApprovedSpec(inventory);
 	const draft = requireCorpusDraft(inventory, input.draftId, approved.id, true);
+	// Before the price of the dialog: a basket the critic marked invalid is
+	// repaired or excluded with a reason, unless the operator says force.
+	assertCriticApproves(host.stateRoot, host.projectId, hashValue(draft), input.force === true);
+	const sourceFreshness = requireCurrentCorpusSources(draft, inventory.target);
 	if (inventory.target) assertGradersRunnable(draft.tasks, inventory.target.manifest, `corpus draft ${draft.id}`, targetToolContext(inventory.target));
 	const name = input.name ?? draft.name;
-	const publication = host.dependencies.describeCorpusPublication({ projectId: host.projectId, name, tasks: draft.tasks });
-	const before = { operation: "publish-development-corpus", draftId: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, publication, tasks: draft.tasks };
+	const publication = describeDevelopmentCorpusPublication({ projectId: host.projectId, name, tasks: draft.tasks });
+	const before = { operation: "publish-development-corpus", draftId: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, publication, tasks: draft.tasks,
+		...(sourceFreshness ? { sourceFreshness } : {}),
+	};
 	const actor = await host.confirm(input, gate, t("confirm.title.publish-corpus"), before, options.signal);
 	const current = host.decisionInventory(input.kind);
 	const currentApproved = requireApprovedSpec(current, approved.id);
 	const reloaded = requireCorpusDraft(current, draft.id, currentApproved.id, true);
-	const afterPublication = host.dependencies.describeCorpusPublication({ projectId: host.projectId, name, tasks: reloaded.tasks });
-	const after = { operation: "publish-development-corpus", draftId: reloaded.id, draftHash: hashValue(reloaded), approvedSpec: reloaded.approvedSpec, publication: afterPublication, tasks: reloaded.tasks };
+	const afterSources = requireCurrentCorpusSources(reloaded, current.target);
+	const afterPublication = describeDevelopmentCorpusPublication({ projectId: host.projectId, name, tasks: reloaded.tasks });
+	const after = { operation: "publish-development-corpus", draftId: reloaded.id, draftHash: hashValue(reloaded), approvedSpec: reloaded.approvedSpec, publication: afterPublication, tasks: reloaded.tasks,
+		...(afterSources ? { sourceFreshness: afterSources } : {}),
+	};
 	if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 	let matchingExisting: CorpusMetadata[];
 	try {
@@ -108,7 +132,7 @@ export async function decideImportDataset(
 	}
 	const holdout = requested;
 	const build = (): { subject: Record<string, unknown>; developmentCount: number } => {
-		const compiled = host.dependencies.compileDatasetCases({
+		const compiled = compileDatasetCases({
 			projectDir: host.projectDir,
 			sourcePath: submission.sourcePath,
 			recipe: submission.recipe,
@@ -148,7 +172,7 @@ export async function decideImportDataset(
 	if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 	// Fixed order: the sealed slice is compiled and published before any
 	// development case exists, so no reserved row can leak into the draft.
-	const ingested = host.dependencies.ingestDataset({
+	const ingested = ingestDataset({
 		projectDir: host.projectDir,
 		stateRoot: host.stateRoot,
 		projectId: host.projectId,
@@ -159,7 +183,7 @@ export async function decideImportDataset(
 		now: host.dependencies.now,
 	});
 	const exact = loadApprovedSpec({ stateRoot: host.stateRoot, projectId: host.projectId, specId: approved.id });
-	const result = host.dependencies.createCorpusDraft({
+	const result = createBuilderCorpusDraft({
 		stateRoot: host.stateRoot,
 		approvedSpec: exact.reference,
 		name: submission.name,
@@ -199,7 +223,7 @@ export async function decideGenerateHoldout(
 	// are a seeded draw over published development cases. Nothing in
 	// `input` reaches the generator except a count and a seed.
 	const reviewPath = input.mode === "review"
-		? host.dependencies.sealedSynthReviewPath(
+		? sealedSynthReviewPath(
 			host.stateRoot,
 			host.projectId,
 			`${host.projectId} ${input.cases} ${input.seed ?? ""} ${host.dependencies.now()}`,
@@ -229,7 +253,7 @@ export async function decideGenerateHoldout(
 	await host.confirm(input, gate, t("confirm.title.generate-holdout"), before, options.signal);
 	host.decisionInventory(input.kind);
 	if (!exactSame(before, describe())) throw new WorkbenchStaleDecisionError(input.kind);
-	const generated = await host.dependencies.synthesizeSealedCorpus({
+	const generated = await synthesizeSealedCorpus({
 		...request,
 		...(options.signal ? { signal: options.signal } : {}),
 	});
@@ -265,7 +289,128 @@ export async function decideGenerateHoldout(
 			generator: generated.generatorModel,
 			promptHash: generated.promptSha256,
 			...(generated.reviewPath ? { reviewPath: generated.reviewPath } : {}),
+			// Counts only: what the cells hold and what the critic kept out, never a case.
+			coverage: {
+				labelled: generated.coverage.achieved.length,
+				unlabelled: generated.coverage.unlabelled,
+				droppedLabel: generated.coverage.droppedLabel,
+			},
+			...(generated.critic
+				? { critic: { reviewed: generated.critic.reviewed, dropped: generated.critic.dropped, byCategory: generated.critic.byCategory } }
+				: {}),
+			...(generated.criticAnnotationsPath ? { criticAnnotationsPath: generated.criticAnnotationsPath } : {}),
 		},
+		view: await host.view(),
+	};
+}
+
+/** The critic reads eight cases per call; the operator is quoted in calls, not in tokens. */
+
+/**
+ * What the critic is shown about one case: the case itself, and the source it
+ * cites, as text. A citation the host cannot read is named as unreadable rather
+ * than replaced by a guess — the critic must never review an invented document.
+ */
+function criticCases(
+	tasks: readonly CorpusTask[],
+	specText: string,
+	read: ((source: CaseSource) => CaseSourceReading) | null,
+): CriticCase[] {
+	return tasks.map((task) => {
+		const { id, input, expected, messages, simulatedUser, world, graders, coverage, source } = task;
+		const subject = { id, input, expected, messages, simulatedUser, world, graders, coverage, source };
+		if (!source) return { task: subject, sourceLabel: "no source cited", sourceText: null };
+		if (source.kind === "spec") return { task: subject, sourceLabel: "the approved Spec", sourceText: specText };
+		try {
+			const reading = read?.(source) ?? { label: `${source.kind} source`, text: null };
+			return { task: subject, sourceLabel: reading.label, sourceText: reading.text };
+		} catch (error) {
+			return {
+				task: subject,
+				sourceLabel: `${source.kind} source could not be read: ${error instanceof Error ? error.message : String(error)}`,
+				sourceText: null,
+			};
+		}
+	});
+}
+
+/**
+ * The critic on the current draft, or on the published development corpus when
+ * no draft is open.
+ *
+ * It reads the cases and their sources and nothing else: no run, no score, no
+ * agent answer. A hard case is not a faulty one, so the only thing this can
+ * conclude is that a test cannot measure what it claims to measure.
+ */
+export async function decideCritiqueCorpus(
+	host: DecisionHost,
+	input: DecisionInputOf<"critique-corpus">,
+	ctx: DecisionContext,
+): Promise<WorkbenchDecisionResult> {
+	const { inventory, gate, options, stage } = ctx;
+	const approved = requireApprovedSpec(inventory);
+	const target = inventory.target;
+	const judge = target?.manifest.evalSuite.judge;
+	// The critic is the judge model. Without one there is nobody to ask, and the
+	// operator hears the same sentence the run gate uses for the same lack.
+	if (!target || !judge) throw new Error(t("blocker.judge-missing"));
+	const onDraft = input.draftId !== undefined || stage === "corpus-review";
+	const draft = onDraft ? requireCorpusDraft(inventory, input.draftId, approved.id, true) : null;
+	const corpus = draft ? null : requireDevelopmentCorpus(inventory, undefined, approved.id);
+	const tasks = draft
+		? draft.tasks
+		: loadCorpus({ stateRoot: host.stateRoot, projectId: host.projectId, corpusId: corpus!.id }).tasks;
+	const subject = draft
+		? { kind: "corpus-draft" as const, id: draft.id, hash: hashValue(draft) }
+		: { kind: "development-corpus" as const, id: corpus!.id, hash: corpus!.hash };
+	const calls = Math.ceil(tasks.length / CRITIC_BATCH_SIZE);
+	const before = {
+		operation: "critique-corpus",
+		subject,
+		cases: tasks.length,
+		judge: `${judge.provider}/${judge.id}`,
+	};
+	await host.confirm(input, gate, t("confirm.title.critique-corpus"), before, options.signal, {
+		question: t("confirm.critique-corpus", {
+			cases: localizedCount(tasks.length, "case"),
+			calls: localizedCount(calls, "execution"),
+		}),
+		estimate: host.runEstimate(calls, target),
+	});
+	const sidecarDir = projectStateDir(
+		host.stateRoot,
+		host.projectId,
+		["case-critic", "exchanges", subject.hash.replace(/^sha256:/, "")],
+		{ create: true, label: "case critic exchange" },
+	);
+	if (!sidecarDir) throw new Error("case critic has no state directory to record its exchanges in");
+	const specText = specTextOf(approved.spec);
+	const critiqued = await critiqueCases({
+		judge,
+		specText,
+		tools: target.tools.map((tool) => tool.descriptor.name),
+		cases: criticCases(tasks, specText, caseSourceReader(target, host.projectDir)),
+		sidecarDir,
+		batchSize: CRITIC_BATCH_SIZE,
+		...(options.signal ? { signal: options.signal } : {}),
+	});
+	const receipt = saveCriticReceipt({
+		stateRoot: host.stateRoot,
+		projectId: host.projectId,
+		subject,
+		judge,
+		findings: critiqued.findings,
+		spend: critiqued.spend,
+		now: host.dependencies.now,
+	});
+	const projection = criticProjection(receipt);
+	const message = receipt.counts.invalid > 0
+		? `${t("critic.summary", receipt.counts)}\n${t("critic.next")}`
+		: t("critic.summary", receipt.counts);
+	return {
+		kind: input.kind,
+		message,
+		result: { ...projection, subject: { kind: subject.kind, id: subject.id } },
 		view: await host.view(),
 	};
 }

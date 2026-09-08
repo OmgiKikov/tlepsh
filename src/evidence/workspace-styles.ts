@@ -1,4 +1,4 @@
-/** A scoped work surface. Standalone traces, replay and exported HTML retain their shared theme. */
+/** A scoped work surface. Standalone traces and exported HTML retain their shared theme. */
 export const WORKSPACE_STYLES = `
 .evidence-workspace{color-scheme:dark;--bg:#111216;--surface:#17191e;--surface2:#1c1f26;--sunken:#14161b;--line:#2a2d35;--line-strong:#414650;--text:#e8e9ed;--muted:#a6aab6;--faint:#898e9b;--accent:#b4b9ff;--accent-soft:#292b42;--pass:#7ad8af;--pass-soft:#193229;--fail:#ffa2ab;--fail-soft:#3a222a;--error:#edc485;--error-soft:#392f20;font-size:14px}
 .evidence-workspace .wrap{max-width:2000px;padding:0 24px 24px}

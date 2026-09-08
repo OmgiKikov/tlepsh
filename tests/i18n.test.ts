@@ -360,11 +360,9 @@ describe("ru renders", () => {
 			"Прогноз не заявлен",
 			"Проверка около $0.42 · около 4 минут — одобряя правку, ты одобряешь и эту проверку",
 			"Диф",
-			"--- a/AGENTS.md",
-			"+++ b/AGENTS.md",
-			"@@ -1 +1,2 @@",
-			" context",
-			"+lookup",
+			"AGENTS.md  +1",
+			"  1   1   context",
+			"      2 + lookup",
 			"Твой рабочий каталог остаётся на месте; правка коммитится на ветку кандидата.",
 			"",
 			"Причина Правка по первой проблеме",
@@ -700,14 +698,14 @@ describe("ru renders", () => {
 		} as never);
 
 		const status = String(setStatus.mock.calls.at(-1)?.[1]);
-		expect(status).toContain("AHDE прогон оценено 1/372 · идёт 0");
+		expect(status).toContain("AHDE прогон оценено 1/90 · идёт 0");
 		expect(status).toContain("· оценено провален");
 		const frame = (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
-		expect(frame[0]).toBe("AHDE · черновой трейс прогона");
+		expect(frame[0]).toBe("AHDE · прогон вживую");
 		expect(frame[1]).toBe("открыть живой трейс · http://127.0.0.1:6333/live/abc");
-		expect(frame).toContain("прогон · старт 1/90 · task_001");
-		expect(frame).toContain("инструмент ✓ bash · ok");
-		expect(frame).toContain("оценка ✗ · провален · проверок 0/3 · пока ✓0 ✗1");
+		// 372 executions is past one cell each; the bar carries the share.
+		expect(frame[2]).toMatch(/^░+ 1%  1\/90 · ✓0 ✗1 · \d+с$/);
+		expect(frame.at(-1)).toBe("последний: ✗ task_001 · провален · проверок 0/3");
 		progress.dispose();
 	});
 
@@ -725,6 +723,11 @@ describe("ru renders", () => {
  * languages is an untranslated string, not a format.
  */
 const IDENTICAL_BY_DESIGN = new Set([
+	// A Greek letter is a column header in both languages; a separator and a
+	// cells-and-numbers template have no words at all.
+	"table.col.delta",
+	"trace.grid",
+	"trace.sep",
 	"judge.label-hint",
 	"label.ask-assertion",
 	"confirm.start-testing.basket",

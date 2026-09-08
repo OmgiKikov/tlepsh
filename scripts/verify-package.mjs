@@ -60,21 +60,16 @@ try {
 		"templates/basic-agent/manifest.yaml",
 		"dist/application/target-authoring-context.js",
 		"dist/application/agent-log.js",
-		"dist/application/watch.js",
 		"dist/application/experiment-history.js",
 		"dist/application/proposal-search.js",
 		"dist/application/target-feedback.js",
 		"dist/application/tool-workshop.js",
 		"dist/builder/workshop-tools.js",
 		"dist/target/feedback-extension.js",
-		"dist/target/container-backend.js",
 		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
 		"dist/cli-invocation.js",
 		"dist/evidence/live.js",
-		"dist/serve/server.js",
-		"dist/serve/confirmations.js",
-		"dist/serve/session-lock.js",
 		"dist/run-events.js",
 		"dist/target/command.js",
 		"dist/workbench/workbench.js",
@@ -161,14 +156,8 @@ import {
 	AHDE_WORKSHOP_TOOL_NAMES,
 	CLI_COMMANDS,
 	parseCliInvocation,
-	parseDurationFlag,
 	openBuilderWorkshop,
-	createAhdeServeApi,
-	containerSandboxFingerprint,
-	dockerBackend,
-	resolveContainerSandbox,
 	compileAgentLog,
-	runWatch,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -190,11 +179,9 @@ import {
   promoteReviewedCandidate,
   projectRunEventText,
   publishBuilderDevelopmentCorpus,
-	readPublicTargetFile,
   recordBuilderAuthoredProposal,
   resolveBuilderAssets,
 	resolveDevelopmentFailureOperations,
-	listPublicTargetFiles,
   reviewCandidate,
   runAppliedBuilderCandidate,
 	runInteractiveTarget,
@@ -221,54 +208,20 @@ const expectedCommandNames = [
 	"holdout", "calibrate", "regrade",
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
 ];
-// The CLI command surface the installed package registers. serve is the
-// platform seam: the Workbench behind a loopback HTTP/JSON API; log and watch
-// are the operator's read surfaces (growth, and drift on an unchanged
-// revision).
+// The CLI command surface the installed package registers: the conversation,
+// its two ways back in, the Target, and the three commands that need no Builder.
 const expectedCliCommandNames = [
-	"root", "builder-pi", "continue", "resume", "target", "evidence", "serve",
-	"init", "run", "validate", "list", "corpus", "feedback", "tool",
-	"diagnose", "regrade", "report", "export", "label",
-	"candidate", "calibrate", "check", "improve", "search", "review", "promote",
-	"reject", "passport", "log", "watch",
+	"root", "builder-pi", "continue", "resume", "target", "evidence",
+	"init", "run", "validate",
 ];
 if (JSON.stringify(CLI_COMMANDS) !== JSON.stringify(expectedCliCommandNames)) {
   throw new Error(\`installed package registered an unexpected CLI command surface: \${CLI_COMMANDS.join(", ")}\`);
 }
 {
-  const served = parseCliInvocation([
-    "serve", "--target", "./agent", "--port", "0", "--host", "127.0.0.1", "--allow-concurrent",
-  ]);
-  if (served.command !== "serve" || served.flags["allow-concurrent"] !== "true" || served.flags.port !== "0") {
-    throw new Error("installed ahde serve invocation spec did not parse its pinned flags");
+  const ran = parseCliInvocation(["run", "--target", "./agent", "--repetitions", "3", "--jobs", "2"]);
+  if (ran.command !== "run" || ran.flags.repetitions !== "3" || ran.flags.jobs !== "2") {
+    throw new Error("installed ahde run invocation spec did not parse its pinned flags");
   }
-  let refusedRemoteBind = false;
-  try {
-    parseCliInvocation(["serve", "--target", "./agent", "--host", "0.0.0.0"]);
-  } catch (error) {
-    refusedRemoteBind = /--host .* 127\\.0\\.0\\.1, localhost/.test(String(error?.message ?? error));
-  }
-  if (!refusedRemoteBind) throw new Error("installed ahde serve accepted a non-loopback --host");
-}
-{
-  const logged = parseCliInvocation(["log", "--target", "./agent", "--project", "demo", "--limit", "5", "--json"]);
-  if (logged.command !== "log" || logged.flags.json !== "true" || logged.flags.limit !== "5") {
-    throw new Error("installed ahde log invocation spec did not parse its pinned flags");
-  }
-  const watched = parseCliInvocation(["watch", "--target", "./agent", "--every", "5m", "--max-runs", "3"]);
-  if (watched.command !== "watch" || watched.flags.every !== "5m" || watched.flags["max-runs"] !== "3") {
-    throw new Error("installed ahde watch invocation spec did not parse its pinned flags");
-  }
-  if (parseDurationFlag("2h") !== 7200000 || parseDurationFlag("nightly") !== null) {
-    throw new Error("installed ahde watch did not parse --every the way an operator writes it");
-  }
-  let refusedBothSchedules = false;
-  try {
-    parseCliInvocation(["watch", "--target", "./agent", "--once", "--every", "5m"]);
-  } catch (error) {
-    refusedBothSchedules = /--once or --every/.test(String(error?.message ?? error));
-  }
-  if (!refusedBothSchedules) throw new Error("installed ahde watch accepted --once together with --every");
 }
 
 for (const [name, value] of Object.entries({
@@ -277,9 +230,7 @@ for (const [name, value] of Object.entries({
 	AHDE_BUILDER_TOOL_NAMES,
 	AHDE_WORKSHOP_TOOL_NAMES,
 	openBuilderWorkshop,
-	createAhdeServeApi,
 	compileAgentLog,
-	runWatch,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -301,11 +252,9 @@ for (const [name, value] of Object.entries({
   promoteReviewedCandidate,
   projectRunEventText,
   publishBuilderDevelopmentCorpus,
-	readPublicTargetFile,
   recordBuilderAuthoredProposal,
   resolveBuilderAssets,
 	resolveDevelopmentFailureOperations,
-	listPublicTargetFiles,
   reviewCandidate,
   runAppliedBuilderCandidate,
 	runInteractiveTarget,
@@ -387,75 +336,6 @@ if (echoPayload.message !== "installed-package" || echoResult.details?.exitCode 
 }
 if (targetTools.sandboxFingerprint !== targetTools.sandboxBackend) {
   throw new Error(\`installed Target tool runtime reported an unexpected sandbox fingerprint: \${targetTools.sandboxFingerprint}\`);
-}
-
-// The container backend must be reachable from the installed package: build one
-// docker argv without any daemon, and prove the required/best-effort matrix.
-const containerPolicy = {
-  runtime: "docker",
-  image: "registry.example.com/ahde/target@sha256:" + "c".repeat(64),
-  platform: "linux/amd64",
-  readOnlyRootfs: true,
-};
-const containerInvocation = dockerBackend.invocation({
-  policy: containerPolicy,
-  mounts: { workspaceDir: targetDir, scratchDir: toolScratch },
-  network: "deny",
-  environment: { HOME: toolScratch, LANG: "C.UTF-8", SMOKE_VALUE: "visible" },
-  cwd: targetDir,
-  argv: ["/bin/sh", "-c", "true"],
-  hostEnvironment: { PATH: "/usr/bin:/bin" },
-});
-const containerArgs = containerInvocation.args;
-for (const expected of ["--rm", "--network", "none", "--cap-drop", "ALL", "--read-only", "-w", "/workspace"]) {
-  if (!containerArgs.includes(expected)) {
-    throw new Error(\`installed container backend argv is missing \${expected}: \${containerArgs.join(" ")}\`);
-  }
-}
-if (containerArgs.some((argument) => argument.includes("SMOKE_VALUE=visible"))) {
-	throw new Error("installed container backend exposed a declared environment value in Docker argv");
-}
-const environmentFlag = containerArgs.indexOf("--env-file");
-const environmentFile = environmentFlag >= 0 ? containerArgs[environmentFlag + 1] : undefined;
-if (!environmentFile || !readFileSync(environmentFile, "utf8").includes("SMOKE_VALUE=visible\\n")) {
-	throw new Error("installed container backend did not pass the declared allowlist through its private env-file");
-}
-const hostMentions = containerArgs.filter((argument) => argument.includes(targetDir) || argument.includes(toolScratch));
-if (hostMentions.some((argument) => !/:\\/(workspace|scratch|tools):(ro|rw)$/.test(argument))) {
-  throw new Error(\`installed container backend leaked a host path outside a mount spec: \${hostMentions.join(" ")}\`);
-}
-containerInvocation.dispose?.();
-if (existsSync(environmentFile)) {
-	throw new Error("installed container backend did not remove its private env-file");
-}
-const runtimeIdentity = {
-	version: "27.1.0",
-	os: "linux",
-	arch: "amd64",
-	daemonId: "package-smoke-daemon",
-	kernelVersion: "6.10.0-package-smoke",
-	driver: "overlay2",
-	cgroupDriver: "cgroupfs",
-	cgroupVersion: "2",
-	securityOptionsHash: "d".repeat(64),
-	contextHash: "e".repeat(64),
-};
-if (!containerSandboxFingerprint(containerPolicy, runtimeIdentity).startsWith(
-	"container:docker@sha256:" + "c".repeat(64) + ":config:",
-)) {
-  throw new Error("installed container backend computed the wrong sandbox fingerprint");
-}
-const missingRuntime = { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
-let failedClosed = false;
-try {
-  resolveContainerSandbox({ policy: containerPolicy, sandbox: "required", detect: () => missingRuntime });
-} catch (error) {
-  failedClosed = /sandbox: required fails closed/.test(error.message);
-}
-if (!failedClosed) throw new Error("installed container backend did not fail closed under sandbox: required");
-const fallback = resolveContainerSandbox({ policy: containerPolicy, sandbox: "best-effort", detect: () => missingRuntime });
-if (fallback.mode !== "fallback" || fallback.fingerprint !== undefined || fallback.warnings.length !== 1) {
-  throw new Error("installed container backend did not fall back under sandbox: best-effort");
 }
 
 // Launch through the public Builder entry point, but replace only Pi's blocking
@@ -591,14 +471,6 @@ await launchBuilderPi({
       targetResource?.details?.detail?.content?.resource?.path !== "AGENTS.md" ||
       !targetResource?.details?.detail?.content?.resource?.content?.includes("# My Agent")
     ) throw new Error("installed Workbench did not return exact AGENTS.md content");
-	const compatibilityFiles = listPublicTargetFiles(targetDir);
-	if (!compatibilityFiles.some((resource) => resource.path === "AGENTS.md")) {
-	  throw new Error("installed package broke the deprecated declared-resource list export");
-	}
-	const compatibilityRead = readPublicTargetFile(targetDir, "AGENTS.md");
-	if (compatibilityRead.path !== "AGENTS.md" || !compatibilityRead.content.includes("# My Agent")) {
-	  throw new Error("installed package broke the deprecated exact-Git read export");
-	}
     let decideFailedClosed = false;
     try {
       await decideTool?.execute(
@@ -756,55 +628,6 @@ try {
   }
 } finally {
   await explorer.close();
-}
-
-// The platform seam on a real loopback socket: one bearer token, one route
-// table, and no way in without the token the server minted.
-const serveApi = createAhdeServeApi({
-  projectDir: targetDir,
-  stateRoot,
-  runsRoot,
-  projectId: "package-serve-smoke",
-  actorId: "api:package-smoke",
-});
-const serveAddress = await serveApi.listen();
-try {
-  if (serveAddress.host !== "127.0.0.1" || serveAddress.url !== \`http://127.0.0.1:\${serveAddress.port}\`) {
-    throw new Error(\`ahde serve bound an unexpected address: \${serveAddress.url}\`);
-  }
-  const unauthorized = await fetch(\`\${serveAddress.url}/v1/health\`, { signal: AbortSignal.timeout(5_000) });
-  if (unauthorized.status !== 401 || unauthorized.headers.get("www-authenticate") !== "Bearer") {
-    throw new Error("ahde serve answered without a bearer token");
-  }
-  const authorized = { authorization: "Bearer " + serveApi.token };
-  const health = await fetch(\`\${serveAddress.url}/v1/health\`, {
-    headers: authorized,
-    signal: AbortSignal.timeout(5_000),
-  });
-  const healthBody = await health.text();
-  if (health.status !== 200 || !healthBody.includes('"ok":true') || healthBody.includes(serveApi.token)) {
-    throw new Error("ahde serve health did not answer the minted token safely");
-  }
-  const wrongMethod = await fetch(\`\${serveAddress.url}/v1/view\`, {
-    method: "POST",
-    headers: authorized,
-    body: "{}",
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (wrongMethod.status !== 405 || wrongMethod.headers.get("allow") !== "GET") {
-    throw new Error("ahde serve accepted an undeclared method");
-  }
-  const forgedAuthority = await fetch(\`\${serveAddress.url}/v1/decide\`, {
-    method: "POST",
-    headers: { ...authorized, "content-type": "application/json" },
-    body: JSON.stringify({ kind: "approve-spec", reason: "package smoke", actor: "someone-else" }),
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (forgedAuthority.status !== 400 || !(await forgedAuthority.text()).includes("host-owned authority")) {
-    throw new Error("ahde serve accepted a client-supplied actor");
-  }
-} finally {
-  await serveApi.close();
 }
 
 // Full installed-package acceptance path. The model endpoint is loopback-only,
@@ -1166,7 +989,7 @@ try {
 		readFileSync(join(consumerDir, "node_modules", "ahde", "package.json"), "utf8"),
 	);
 	console.log(
-		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + container backend argv/matrix + loopback live/final Evidence HTTP + token-gated serve API + canonical candidate promotion`,
+		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + loopback live/final Evidence HTTP + canonical candidate promotion`,
 	);
 } finally {
 	rmSync(workRoot, { recursive: true, force: true });

@@ -247,6 +247,31 @@ describe("Candidate lifecycle", () => {
 		expect(candidateStatus(promoted)).toBe("promoted");
 	});
 
+	it("refuses to promote a record whose evidence carries a broken regression guard", () => {
+		const base = evaluation();
+		const withGuards = (broken: string[]): EvaluationEvidence => ({
+			...base,
+			development: { ...base.development, regressionGuards: { policy: "regression-guards-v1", guarded: 15, broken } },
+		});
+		const promote = (evidence: EvaluationEvidence) => transitionCandidate(
+			reviewed(evaluated(validated(built(createApplied())), evidence)),
+			event({
+				type: "promoted",
+				eventId: "event-promoted",
+				at: "2026-08-26T10:05:00.000Z",
+				actor: human("owner"),
+				decision: {
+					experimentId: "experiment-1",
+					candidate: { ref: "refs/heads/candidate-1", sha: CANDIDATE_SHA },
+					tag: "v1.0.0",
+					reason: "ship",
+				},
+			}),
+		);
+		expect(candidateStatus(promote(withGuards([])))).toBe("promoted");
+		expect(() => promote(withGuards(["task-7"]))).toThrow(/every regression guard kept/);
+	});
+
 	it("rejects skipped, reversed, and post-terminal transitions", () => {
 		const validate = event({
 			type: "validated",

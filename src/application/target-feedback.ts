@@ -8,7 +8,6 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
-	renameSync,
 	writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -35,9 +34,6 @@ export const TARGET_FEEDBACK_PATH = `${BUILDER_CORPUS_IMPORT_ROOT}/${TARGET_FEED
 
 /** Same bound the dataset compiler truncates a metadata value at, so `note` round-trips. */
 export const MAX_TARGET_FEEDBACK_NOTE_CHARS = 500;
-/** How many recent marks `ahde feedback list` shows, and how wide one preview line is. */
-export const TARGET_FEEDBACK_LIST_LIMIT = 5;
-export const MAX_TARGET_FEEDBACK_PREVIEW_CHARS = 100;
 
 export const TargetFeedbackVerdictSchema = z.enum(["good", "bad"]);
 export type TargetFeedbackVerdict = z.infer<typeof TargetFeedbackVerdictSchema>;
@@ -150,7 +146,7 @@ export function appendTargetFeedbackMark(
 		if (!before.isFile()) throw new Error(`${TARGET_FEEDBACK_PATH} must be a regular file`);
 		if (before.size + Buffer.byteLength(line, "utf8") > MAX_DATASET_SOURCE_BYTES) {
 			throw new Error(
-				`${TARGET_FEEDBACK_PATH} would exceed the ${MAX_DATASET_SOURCE_BYTES}-byte inbox bound; run \`ahde feedback clear\``,
+				`${TARGET_FEEDBACK_PATH} would exceed the ${MAX_DATASET_SOURCE_BYTES}-byte inbox bound; move it aside first`,
 			);
 		}
 		// A previously written file keeps its mode; a file created here is private.
@@ -194,110 +190,4 @@ export function readTargetFeedback(projectDir: string): TargetFeedbackSummary {
 		else malformed += 1;
 	}
 	return { path: TARGET_FEEDBACK_PATH, exists: true, marks, malformed };
-}
-
-/** Timestamp component for an archive name: filename-safe and still sortable. */
-function archiveStamp(at: string): string {
-	return at.replace(/[:.]/g, "-").replace(/\+/g, "-");
-}
-
-export interface TargetFeedbackClearResult {
-	from: string;
-	/** Project-relative archive path; still a `.jsonl` file the dataset flow can read. */
-	to: string;
-	marks: number;
-}
-
-/**
- * Move the inbox file aside. Nothing is deleted: the archive keeps the same
- * extension, so an operator who cleared too early can still import it.
- */
-export function clearTargetFeedback(
-	projectDir: string,
-	now: () => string = () => new Date().toISOString(),
-): TargetFeedbackClearResult | null {
-	const summary = readTargetFeedback(projectDir);
-	if (!summary.exists) return null;
-	const inbox = feedbackInbox(projectDir);
-	const stamp = archiveStamp(now());
-	const name = `feedback.${stamp}.jsonl`;
-	const destination = join(inbox, name);
-	if (existsSync(destination)) {
-		throw new Error(`feedback archive already exists: ${BUILDER_CORPUS_IMPORT_ROOT}/${name}`);
-	}
-	renameSync(join(inbox, TARGET_FEEDBACK_FILE), destination);
-	return {
-		from: TARGET_FEEDBACK_PATH,
-		to: `${BUILDER_CORPUS_IMPORT_ROOT}/${name}`,
-		marks: summary.marks.length,
-	};
-}
-
-function previewLine(mark: TargetFeedbackMark): string {
-	const firstUser = mark.messages.find((message) => message.role === "user");
-	const text = redactTraceText(firstUser?.content ?? "").replace(/\s+/g, " ").trim();
-	if (text.length === 0) return "(no user turn)";
-	return text.length <= MAX_TARGET_FEEDBACK_PREVIEW_CHARS
-		? text
-		: `${text.slice(0, MAX_TARGET_FEEDBACK_PREVIEW_CHARS - 1)}…`;
-}
-
-/**
- * Counts plus the first user turn of the most recent marks. Transcripts stay in
- * the file: the list is for deciding whether there is enough to import, not for
- * reading conversations back in a terminal.
- */
-export function renderTargetFeedbackList(summary: TargetFeedbackSummary): string[] {
-	if (!summary.exists) {
-		return [
-			`no ${TARGET_FEEDBACK_PATH} yet`,
-			"next: run `ahde target`, then mark a reply with /good, /bad [note], alt+g or alt+x",
-		];
-	}
-	const good = summary.marks.filter((mark) => mark.verdict === "good").length;
-	const bad = summary.marks.length - good;
-	const lines = [`${summary.path}  ${summary.marks.length} marks (${good} good, ${bad} bad)`];
-	if (summary.malformed > 0) lines.push(`${summary.malformed} unreadable line(s) skipped`);
-	const recent = summary.marks.slice(-TARGET_FEEDBACK_LIST_LIMIT).reverse();
-	if (recent.length > 0) lines.push(`last ${recent.length}:`);
-	for (const mark of recent) {
-		const note = mark.note ? `  · ${previewNote(mark.note)}` : "";
-		lines.push(`  ${mark.verdict.padEnd(4)}  ${mark.at}  ${previewLine(mark)}${note}`);
-	}
-	if (summary.marks.length > 0) {
-		lines.push(
-			`next: open \`ahde\` and ask to build cases from ${summary.path}; the dataset flow previews it and compiles the dialogues.`,
-		);
-	}
-	return lines;
-}
-
-/**
- * The whole body of `ahde feedback <action>`: the CLI only prints these lines.
- * Keeping it here means the command is testable without a built binary.
- */
-export function runTargetFeedbackCommand(options: {
-	projectDir: string;
-	action: string | undefined;
-	now?: () => string;
-}): string[] {
-	if (options.action === "list") {
-		return renderTargetFeedbackList(readTargetFeedback(options.projectDir));
-	}
-	if (options.action === "clear") {
-		const cleared = options.now
-			? clearTargetFeedback(options.projectDir, options.now)
-			: clearTargetFeedback(options.projectDir);
-		return cleared
-			? [`moved ${cleared.from} → ${cleared.to} (${cleared.marks} marks)`]
-			: [`no ${TARGET_FEEDBACK_PATH} to clear`];
-	}
-	throw new Error("usage: ahde feedback list|clear [--target <dir>]");
-}
-
-function previewNote(note: string): string {
-	const text = note.replace(/\s+/g, " ").trim();
-	return text.length <= MAX_TARGET_FEEDBACK_PREVIEW_CHARS
-		? text
-		: `${text.slice(0, MAX_TARGET_FEEDBACK_PREVIEW_CHARS - 1)}…`;
 }

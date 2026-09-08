@@ -37,6 +37,7 @@ import { workbenchNext } from "../src/workbench/next-actions.js";
 import type { WorkbenchView } from "../src/workbench/types.js";
 import { formatJudgeAgreement } from "../src/domain/judge-agreement.js";
 import { GraderSpec } from "../src/manifest.js";
+import { createCorpus } from "../src/corpus.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { setLanguage } from "../src/i18n.js";
 import {
@@ -49,6 +50,7 @@ import {
 } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { baseRunRecord } from "./helpers/judge-fixtures.js";
+import { CORPUS_INVENTORY_FAULTS, damageCorpusInventory } from "./helpers/corpus-inventory.js";
 
 const roots: string[] = [];
 const at = "2026-08-30T10:00:00.000Z";
@@ -88,6 +90,8 @@ function evidence(
 		runsRoot?: string;
 		stateRoot?: string;
 		startedAt?: string;
+		datasetHash?: string;
+		legacy?: boolean;
 	} = {},
 ): EvidenceFixture {
 	const tasks = options.tasks ?? 6;
@@ -120,6 +124,7 @@ function evidence(
 			taskId: `task-${index}`,
 			trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(trace) },
 			parent: { evalRunId, candidateOf: null },
+			...(options.datasetHash ? { eval: { ...baseRunRecord().eval, datasetHash: options.datasetHash } } : {}),
 			evalResults: {
 				graders: [
 					{ name: "contains", type: "output_contains", passed: true, score: 1, reason: "ok" },
@@ -188,6 +193,9 @@ function evidence(
 		},
 	};
 	writeEvalRun(runsRoot, record);
+	if (options.legacy) {
+		writeFileSync(join(runsRoot, evalRunId, "eval_run.json"), JSON.stringify({ ...record, evidenceVisibility: undefined }));
+	}
 	return {
 		runsRoot,
 		stateRoot,
@@ -355,7 +363,7 @@ describe("/label — the judge check as an exercise", () => {
 		expect(rows[1]?.note).toBe("missed the deadline");
 		// A note is asked for only when the operator said the answer was bad.
 		expect(ui.inputs).toHaveLength(1);
-		// The same file `ahde label` writes.
+		// The same file the label session writes.
 		expect(judgeLabelFilePath(fixture.stateRoot, fixture.projectId, fixture.evalRunId))
 			.toBe(join(fixture.stateRoot, "projects", fixture.projectId, "labels", `${fixture.evalRunId}.jsonl`));
 	});
@@ -574,7 +582,7 @@ describe("/label — the judge check as an exercise", () => {
 
 type CommandOptions = Omit<RegisteredCommand, "name" | "sourceInfo">;
 
-function registerLabel(workbenchOverrides: Record<string, unknown> = {}): {
+function registerLabel(workbenchOverrides: Record<string, unknown> = {}, name = "label"): {
 	command: CommandOptions;
 	show: ReturnType<typeof vi.fn>;
 	note: ReturnType<typeof vi.fn>;
@@ -606,8 +614,8 @@ function registerLabel(workbenchOverrides: Record<string, unknown> = {}): {
 		actorId: () => "local:test-operator",
 		presenter,
 	});
-	const command = registered.get("label");
-	if (!command) throw new Error("missing /label");
+	const command = registered.get(name);
+	if (!command) throw new Error(`missing /${name}`);
 	return { command, show, note };
 }
 
@@ -635,6 +643,41 @@ function labelContext(options: { mode?: "tui" | "print"; hasUI?: boolean; withou
 }
 
 describe("/label as a Builder command", () => {
+	it.each(CORPUS_INVENTORY_FAULTS)("refuses legacy sealed subjects on %s and handles slash-command errors", async (fault) => {
+		setLanguage("en");
+		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-label-inventory-"));
+		roots.push(stateRoot);
+		const scope = { stateRoot, projectId: "project" };
+		const corpus = createCorpus({
+			...scope, name: "holdout", visibility: "sealed",
+			tasks: [{ id: "secret", input: "SEALED-LABEL-SENTINEL", graders: [{ type: "judge", rubric: "private" }] }],
+		});
+		const fixture = evidence({ stateRoot, datasetHash: corpus.hash, legacy: true, tasks: 1 });
+		// With intact metadata the legacy run is hidden even though its index has no visibility.
+		expect(newestJudgedEvalRun(fixture)).toBeNull();
+		const ui = screenFixture([]);
+		const restore = damageCorpusInventory({ ...scope, corpusId: corpus.id }, fault);
+		try {
+			await expect(session(fixture, ui.screen)).rejects.toThrow(/Cannot determine sealed-data visibility.*Restore.*permissions/);
+			expect(ui.blocks).toEqual([]);
+			expect(ui.selects).toEqual([]);
+			for (const name of ["label", "dataset"]) {
+				const { command, show, note } = registerLabel({ ...fixture, projectDir: fixture.runsRoot }, name);
+				const host = labelContext();
+				await expect(command.handler("", host.ctx)).resolves.toBeUndefined();
+				expect(show).toHaveBeenCalledExactlyOnceWith(host.ctx, expect.objectContaining({
+					tone: "error", lines: [expect.stringMatching(/Cannot determine sealed-data visibility.*Restore.*permissions/)],
+				}));
+				expect(host.select).not.toHaveBeenCalled();
+				expect(note).not.toHaveBeenCalled();
+			}
+			expect(existsSync(join(fixture.runsRoot, "exports"))).toBe(false);
+		} finally {
+			restore();
+		}
+		expect(existsSync(join(stateRoot, "projects", fixture.projectId, "labels"))).toBe(false);
+	});
+
 	it("is registered, documented, and last in the public order", () => {
 		expect([...AHDE_BUILDER_COMMAND_NAMES]).toContain("label");
 		const { command } = registerLabel();

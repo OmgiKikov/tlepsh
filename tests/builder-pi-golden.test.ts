@@ -179,6 +179,7 @@ it("drives the complete canonical Workbench tool loop without revealing sealed c
 		const verified = await call("ahde_workbench_decide", {
 			kind: "verify-candidate",
 			repetitions: SEALED_VERIFICATION_REPETITIONS,
+			exam: true,
 			reason: "Run the exact promotion gate.",
 		});
 		expect(verified.result).toMatchObject({
@@ -192,6 +193,14 @@ it("drives the complete canonical Workbench tool loop without revealing sealed c
 		});
 		expect(verified.view.stage).toBe("candidate-review");
 		const candidateId = String(verified.result.candidate.candidateId);
+		// The review view carries the comparison case by case, read off the two
+		// development eval runs: every case, both arms, and never a sealed one.
+		const candidateReview = await call("ahde_workbench_view", { aspect: "review" });
+		expect(candidateReview.detail.content.kind).toBe("candidate");
+		const cases = candidateReview.detail.content.cases as Array<{ taskId: string; scoreDelta: number; input: string | null }>;
+		expect(cases.length).toBeGreaterThan(0);
+		expect(cases.every((entry) => typeof entry.taskId === "string" && Number.isFinite(entry.scoreDelta))).toBe(true);
+		expect(JSON.stringify(cases)).not.toContain(SEALED_INPUT);
 
 		const reviewed = await call("ahde_workbench_decide", {
 			kind: "review-candidate",

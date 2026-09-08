@@ -60,7 +60,7 @@ describe("contextual Builder welcome", () => {
 		expect(welcomeIntents(state().view!)).not.toContain("Прогнать корзину");
 	});
 
-	it("offers run, improvement and model selection only from current canonical guidance", () => {
+	it("offers run and improvement only from current canonical guidance", () => {
 		setLanguage("ru");
 		const current = state({
 			stage: "improvement-authoring",
@@ -68,11 +68,10 @@ describe("contextual Builder welcome", () => {
 				{ kind: "run-current", asks: false, when: "run" },
 				{ kind: "run-eval", asks: false, when: "run" },
 				{ kind: "improve", asks: true, when: "improve" },
-				{ kind: "model-experiment", asks: true, when: "model" },
 			], submit: [] },
 		}).view!;
 		expect(welcomeIntents(current)).toEqual([
-			"Прогнать корзину", "Улучшить ответы, на которых агент ошибается", "Подобрать агенту модель дешевле",
+			"Прогнать корзину", "Улучшить ответы, на которых агент ошибается", "Покажи текущее состояние проекта",
 		]);
 		current.guidance!.decide = [];
 		expect(welcomeIntents(current)).toEqual(["Покажи текущее состояние проекта"]);

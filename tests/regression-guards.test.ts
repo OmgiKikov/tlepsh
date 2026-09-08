@@ -76,6 +76,7 @@ async function reviewedCandidate(fixture: ImproveFixture): Promise<string> {
 	const verified = await fixture.workbench.decide({
 		kind: "verify-candidate",
 		repetitions: SEALED_VERIFICATION_REPETITIONS,
+		exam: true,
 		reason: "Verify the applied candidate",
 	}, approvingGate());
 	if (verified.result.outcome !== "verified") throw new Error("the fixture candidate was stopped by its screen");
@@ -196,7 +197,7 @@ describe("promoted fixes become regression guards", () => {
 	});
 
 	it("screens the exact revision a Candidate record was built from", async () => {
-		// The path `ahde check --target . --candidate <id>` takes.
+		// The path a candidate check takes.
 		const screen = await runCheapCheckForCandidate({
 			repositoryDir: fixture.projectDir,
 			runsRoot: fixture.runsRoot,

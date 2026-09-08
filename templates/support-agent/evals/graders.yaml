@@ -3,12 +3,12 @@
 #
 # Deterministic first — they cost nothing and never drift:
 #   {"type": "output_contains", "text": "жалоба"}        # substring, case-insensitive by default
+#   {"type": "output_excludes", "text": "30 дней"}       # the must-not check: a trap value the answer may not state
 #   {"type": "output_matches",  "pattern": "^Тип обращения: "}
 #   {"type": "tool_called",     "tool": "bash", "argsContains": "check_account"}
 #
 # `judge` only where prose has to be judged. It needs the manifest's judge
 # block, the judge may not be the Target's own model, and an uncalibrated
-# judge is reported as such in the passport until you run
-# `ahde label <evalRunId> --target .`:
+# judge is reported as such in the passport until you run /label in the Builder:
 #   {"type": "judge", "rubric": "Ответ классифицирует обращение как вопрос и по существу раскрывает тему."}
 defaults: []

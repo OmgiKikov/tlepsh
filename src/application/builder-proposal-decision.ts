@@ -28,7 +28,7 @@ const BuilderProposalDecisionClaimSchema = z.discriminatedUnion("decision", [
 		paths: z.array(z.string().min(1)).min(1)
 			.refine((paths) => new Set(paths).size === paths.length, "paths must be unique"),
 		actor: HumanActorSchema,
-		via: z.enum(["improvement-loop", "proposal-search"]).nullable(),
+		via: z.enum(["improvement-loop", "proposal-search", "first-build"]).nullable(),
 		/**
 		 * The verification amount the apply dialog showed and the operator
 		 * approved with the diff, or null for an automated apply. It rides on the

@@ -22,7 +22,7 @@ import { shortSha, clip } from "../builder/render/format.js";
 /**
  * The agent's growth, version by version.
  *
- * `ahde log` answers one question the operator has never been able to ask:
+ * `/log` answers one question the operator has never been able to ask:
  * "what has this agent actually become?" Every fact is already durable —
  * promotions and rejections live in immutable Candidate records, their scores
  * in the v4 gate evidence those records carry, the tasks a promotion fixed in

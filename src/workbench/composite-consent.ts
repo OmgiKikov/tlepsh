@@ -8,6 +8,7 @@ import type { SpecSnapshot } from "../spec.js";
 import type { WorkbenchInventory } from "./inventory.js";
 import type { WorkbenchDecisionInput, WorkbenchHumanGate, WorkbenchProposalReview } from "./types.js";
 import { WorkbenchStaleDecisionError } from "./errors.js";
+import { requireCurrentCorpusSources, type CorpusSourceFreshness } from "./corpus-publication.js";
 
 export function testingConsent(inventory: WorkbenchInventory, selection: {
 	specDraftId: string | null; approvedSpecId: string | null; corpusDraftId: string | null;
@@ -15,8 +16,10 @@ export function testingConsent(inventory: WorkbenchInventory, selection: {
 	const spec = inventory.specs.find((item) => item.id === (selection.specDraftId ?? selection.approvedSpecId));
 	const corpus = selection.corpusDraftId === null ? null : inventory.corpusDrafts.find((item) => item.id === selection.corpusDraftId);
 	if (!spec || corpus === undefined || inventory.integrityBlockers.length > 0) throw new WorkbenchStaleDecisionError("start-testing");
+	const sourceFreshness = corpus ? requireCurrentCorpusSources(corpus, inventory.target) : null;
 	return {
 		specHash: hashValue(spec), corpusHash: corpus ? hashValue(corpus) : null,
+		...(sourceFreshness ? { sourceFreshness } : {}),
 		target: inventory.target ? {
 			id: inventory.target.manifest.id, sha: inventory.target.gitSha,
 			manifestHash: hashValue(inventory.target.manifest),
@@ -62,7 +65,7 @@ export function assertCompositeFresh<T>(kind: "start-testing" | "ship", before: 
 }
 
 const SpecApprovalSubject = z.object({ draftSpecId: z.string(), draftSnapshotHash: z.string() });
-const CorpusPublicationSubject = z.object({ draftId: z.string(), draftHash: z.string() });
+const CorpusPublicationSubject = z.object({ draftId: z.string(), draftHash: z.string(), sourceFreshness: z.unknown().optional() });
 const CandidateDecisionSubject = z.object({
 	candidateHash: z.string(), candidate: z.object({ candidateId: z.string() }),
 	recommendation: z.string().optional(), version: z.string().optional(),
@@ -74,9 +77,10 @@ export function matchesSpecApproval(subject: unknown, draft: SpecSnapshot): bool
 	return value.success && value.data.draftSpecId === draft.id && value.data.draftSnapshotHash === hashValue(draft);
 }
 
-export function matchesCorpusPublication(subject: unknown, draft: BuilderCorpusDraft): boolean {
+export function matchesCorpusPublication(subject: unknown, draft: BuilderCorpusDraft, sourceFreshness?: CorpusSourceFreshness): boolean {
 	const value = CorpusPublicationSubject.safeParse(subject);
-	return value.success && value.data.draftId === draft.id && value.data.draftHash === hashValue(draft);
+	return value.success && value.data.draftId === draft.id && value.data.draftHash === hashValue(draft) &&
+		hashValue(value.data.sourceFreshness ?? null) === hashValue(sourceFreshness ?? null);
 }
 
 export function matchesEvaluatorConfiguration(subject: unknown, expected: EvaluatorConfigurationSubject): boolean {

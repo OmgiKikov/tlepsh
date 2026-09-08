@@ -1,5 +1,5 @@
 import { candidateStatus } from "../domain/candidate.js";
-import { isAutomatedDevelopmentCandidate, type WorkbenchInventory } from "./inventory.js";
+import { openDevelopmentChecks, type WorkbenchInventory } from "./inventory.js";
 import { requireApprovedSpec, requireDevelopmentCorpus, resolveOne } from "./resolution.js";
 import { WorkbenchSelectionRequiredError } from "./errors.js";
 import { workbenchDecisionStages } from "./transition-policy.js";
@@ -47,17 +47,18 @@ export function resolveRunCurrent(inventory: WorkbenchInventory, stage: Workbenc
 				return { status: "ready", route: { kind: "run-eval", developmentCorpusId: corpus.id } };
 			}
 			case "verify-candidate": {
-				const automated = inventory.candidates.filter((candidate) =>
-					candidate.projectId === inventory.projectId && isAutomatedDevelopmentCandidate(candidate) &&
-					!inventory.abandonedCandidates.has(candidate.candidateId));
-				if (automated.length > 0) {
-					const candidate = resolveOne({ items: automated, focusId: inventory.validFocus.candidate?.id,
-						id: (item) => item.candidateId, label: "automated hypothesis" });
-					if (candidate.origin.kind !== "applied-builder") throw new Error("automated hypothesis lost Builder provenance");
+				// A checked change: “run” checks it again, on the basket; the exam
+				// stays with `ship`.
+				const checks = openDevelopmentChecks(inventory);
+				if (checks.length > 0) {
+					const candidate = resolveOne({ items: checks, focusId: inventory.validFocus.candidate?.id,
+						id: (item) => item.candidateId, label: "checked change" });
+					if (candidate.origin.kind !== "applied-builder") throw new Error("checked change lost Builder provenance");
 					return { status: "ready", route: { kind: "verify-candidate", builderRunId: candidate.origin.builderRunId } };
 				}
 				const proposals = inventory.proposals.filter((proposal) =>
 					proposal.status === "applied" && proposal.appliedVia !== "proposal-search" &&
+					proposal.appliedVia !== "first-build" &&
 					!inventory.candidates.some((candidate) => candidate.origin.kind === "applied-builder" &&
 						candidate.origin.builderRunId === proposal.record.runId &&
 						!inventory.abandonedCandidates.has(candidate.candidateId)));

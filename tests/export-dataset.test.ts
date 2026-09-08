@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,11 +8,11 @@ import {
 	DatasetExportError,
 	corpusTaskLookup,
 	datasetExportDoneLine,
-	datasetExportOptionsFromFlags,
 	datasetLine,
 	exportDataset,
 	renderDatasetExportSummary,
 	runAgentKind,
+	sealedDatasetHashesFor,
 	MAX_DATASET_MESSAGE_CHARS,
 	type DatasetExportLine,
 	type DatasetExportResult,
@@ -22,11 +22,6 @@ import {
 import { corpusDatasetLabel } from "../src/application/corpus-target.js";
 import { setLanguage } from "../src/i18n.js";
 import { createCorpus } from "../src/corpus.js";
-import {
-	CliInvocationError,
-	parseCliInvocation,
-	type ParsedCliInvocation,
-} from "../src/cli-invocation.js";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
 	AHDE_EVALUATOR_ID,
@@ -42,6 +37,7 @@ import {
 } from "../src/provenance.js";
 import { isPrivateWorkspacePath } from "../src/runner.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
+import { CORPUS_INVENTORY_FAULTS, damageCorpusInventory } from "./helpers/corpus-inventory.js";
 
 const roots: string[] = [];
 
@@ -301,13 +297,6 @@ function readLines(path: string): DatasetExportLine[] {
 		.map((line) => JSON.parse(line) as DatasetExportLine);
 }
 
-/** The flag map the CLI hands the export, produced by the real parser. */
-function commandFlags(argv: readonly string[]): ParsedCliInvocation["flags"] {
-	const parsed = parseCliInvocation(argv);
-	expect(parsed.kind).toBe("command");
-	return (parsed as ParsedCliInvocation).flags;
-}
-
 function totalSkipped(counts: { skipped: Record<string, number> }): number {
 	return Object.values(counts.skipped).reduce((sum, value) => sum + value, 0);
 }
@@ -317,7 +306,7 @@ function tasksNamed(entries: Record<string, DatasetTaskFacts>): DatasetTaskLooku
 	return () => new Map(Object.entries(entries));
 }
 
-describe("ahde export: the exported line", () => {
+describe("dataset export: the exported line", () => {
 	it("carries the harness the run saw, the whole conversation, and its evidence", () => {
 		const runsRoot = newRunsRoot();
 		writeEvalRun(runsRoot, {
@@ -457,13 +446,65 @@ describe("ahde export: the exported line", () => {
 	});
 });
 
-describe("ahde export: sealed evidence never leaves", () => {
+describe("dataset export: sealed evidence never leaves", () => {
 	/**
 	 * The sentinel is a sealed holdout task's own input, repeated in every place
 	 * an export could plausibly read it from: the task id, the conversation, the
 	 * tool result, and the instructions of that run's snapshot.
 	 */
 	const SENTINEL = "SEALED-HOLDOUT-SENTINEL-9f3c";
+
+	it.each(CORPUS_INVENTORY_FAULTS)("blocks every export selection on %s before writing legacy sealed data", (fault) => {
+		const runsRoot = newRunsRoot();
+		const scope = { stateRoot: join(runsRoot, "state"), projectId: "project" };
+		const corpus = createCorpus({
+			...scope, name: "holdout", visibility: "sealed",
+			tasks: [{ id: "secret", input: SENTINEL, graders: [{ type: "output_contains", text: SENTINEL }] }],
+		});
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_legacy", datasetHash: corpus.hash,
+			runs: [{ runId: "run_legacy", taskId: "secret", trace: conversationTrace({ question: SENTINEL, answer: SENTINEL, toolResult: SENTINEL }) }],
+		});
+		const path = join(runsRoot, "erun_legacy", "eval_run.json");
+		const record = JSON.parse(readFileSync(path, "utf8"));
+		delete record.evidenceVisibility;
+		writeFileSync(path, JSON.stringify(record));
+		const restore = damageCorpusInventory({ ...scope, corpusId: corpus.id }, fault);
+		try {
+			for (const selection of [{ all: true }, { latest: true }, { evalRunId: "erun_legacy" }, { runId: "run_legacy" }]) {
+				expect(() => exportDataset({
+					runsRoot, ...selection,
+					sealedDatasetHashes: sealedDatasetHashesFor(scope),
+					tasks: corpusTaskLookup(scope),
+				})).toThrow(/Cannot determine sealed-data visibility.*Restore.*permissions/);
+			}
+			expect(existsSync(join(runsRoot, "exports"))).toBe(false);
+		} finally {
+			restore();
+		}
+	});
+
+	it("exports ordinary evidence when no corpus store has ever been created", () => {
+		const runsRoot = newRunsRoot();
+		const scope = { stateRoot: join(runsRoot, "state"), projectId: "project" };
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_dev",
+			runs: [{ runId: "run_dev", taskId: "task", trace: conversationTrace({ question: "q", answer: "a", toolResult: "r" }) }],
+		});
+		const exportOrdinary = () => exportDataset({ runsRoot, all: true, sealedDatasetHashes: sealedDatasetHashesFor(scope) });
+		expect(exportOrdinary().counts.exported).toBe(1);
+		expect(existsSync(scope.stateRoot)).toBe(false);
+		// Every partially initialized layout is legitimate, as is an empty store.
+		for (const path of [
+			scope.stateRoot,
+			join(scope.stateRoot, "projects"),
+			join(scope.stateRoot, "projects", scope.projectId),
+			join(scope.stateRoot, "projects", scope.projectId, "corpora"),
+		]) {
+			mkdirSync(path);
+			expect(exportOrdinary().counts.exported).toBe(1);
+		}
+	});
 
 	function sealedCorpusFixture(): string {
 		const runsRoot = newRunsRoot();
@@ -540,10 +581,16 @@ describe("ahde export: sealed evidence never leaves", () => {
 		expect(readFileSync(result.path, "utf8")).not.toContain(SENTINEL);
 	});
 
-	it("refuses a legacy sealed dataset hash the caller supplies", () => {
+	it("refuses a legacy sealed dataset hash from the shared corpus lookup", () => {
 		const runsRoot = newRunsRoot();
+		const scope = { stateRoot: join(runsRoot, "state"), projectId: "project" };
+		const corpus = createCorpus({
+			...scope, name: "holdout", visibility: "sealed",
+			tasks: [{ id: "secret", input: SENTINEL, graders: [{ type: "output_contains", text: SENTINEL }] }],
+		});
 		writeEvalRun(runsRoot, {
 			evalRunId: "erun_legacy",
+			datasetHash: corpus.hash,
 			runs: [{ runId: "run_legacy", taskId: `task-${SENTINEL}`, trace: conversationTrace({ question: SENTINEL, answer: SENTINEL, toolResult: SENTINEL }) }],
 		});
 		// The record calls itself development; the project's sealed corpus hashes
@@ -556,7 +603,7 @@ describe("ahde export: sealed evidence never leaves", () => {
 		const result = exportDataset({
 			runsRoot,
 			all: true,
-			sealedDatasetHashes: new Set([`sha256:${"e".repeat(64)}`]),
+			sealedDatasetHashes: sealedDatasetHashesFor(scope),
 		});
 		expect(result.counts.exported).toBe(0);
 		expect(result.counts.skipped.sealed).toBe(1);
@@ -564,7 +611,7 @@ describe("ahde export: sealed evidence never leaves", () => {
 	});
 });
 
-describe("ahde export: what is not evidence is not a dataset", () => {
+describe("dataset export: what is not evidence is not a dataset", () => {
 	it("refuses a cheap-check screen", () => {
 		const runsRoot = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
@@ -647,7 +694,7 @@ describe("ahde export: what is not evidence is not a dataset", () => {
 	});
 });
 
-describe("ahde export: redaction", () => {
+describe("dataset export: redaction", () => {
 	it("keeps legacy conversations readable without promoting unattested sidecars to evidence", () => {
 		const runsRoot = newRunsRoot();
 		writeEvalRun(runsRoot, { evalRunId: "erun_legacy", runs: [{
@@ -761,7 +808,7 @@ describe("ahde export: redaction", () => {
 	});
 });
 
-describe("ahde export: the selection bar", () => {
+describe("dataset export: the selection bar", () => {
 	function scoredFixture(): string {
 		const runsRoot = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
@@ -823,7 +870,7 @@ describe("ahde export: the selection bar", () => {
 	});
 });
 
-describe("ahde export: what is selected", () => {
+describe("dataset export: what is selected", () => {
 	function threeEvalRuns(): string {
 		const runsRoot = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
@@ -893,7 +940,7 @@ describe("ahde export: what is selected", () => {
 	});
 });
 
-describe("ahde export: output and refusals", () => {
+describe("dataset export: output and refusals", () => {
 	it("defaults the output to exports/ under the Target and counts every scanned run", () => {
 		const runsRoot = newRunsRoot();
 		const targetDir = newRunsRoot();
@@ -1047,7 +1094,7 @@ describe("the /dataset line", () => {
 	});
 });
 
-describe("ahde export: the world a case happens in", () => {
+describe("dataset export: the world a case happens in", () => {
 	const trace = conversationTrace({ question: "Отмени заказ 7.", answer: "Отменил.", toolResult: "ok" });
 
 	it("carries the state the case started from and the state the run left behind", () => {
@@ -1110,8 +1157,11 @@ describe("ahde export: the world a case happens in", () => {
 			tasks: [{
 				id: "task_world",
 				input: "Отмени заказ 7.",
-				world: { state: { order: { id: 7, status: "open" } } },
-				simulatedUser: { goal: "отменить заказ", persona: "торопится", maxTurns: 4 },
+				world: { state: { order: { id: 7, status: "open" }, internalNote: "RAW-WORLD-SENTINEL" } },
+				simulatedUser: {
+					goal: "отменить заказ", persona: "торопится", maxTurns: 4,
+					knownFacts: 'My order is 7. api_key="private-simulator-key".',
+				},
 				graders: [{ type: "output_contains", text: "Отменил" }],
 			}],
 		});
@@ -1134,15 +1184,39 @@ describe("ahde export: the world a case happens in", () => {
 			tasks: corpusTaskLookup({ stateRoot, projectId: "demo" }),
 		}).path);
 		expect(line!.meta.world).toEqual({
-			initial: { order: { id: 7, status: "open" } },
+			initial: { order: { id: 7, status: "open" }, internalNote: "RAW-WORLD-SENTINEL" },
 			final: { order: { id: 7, status: "cancelled" } },
 		});
 		expect(line!.meta.simulatedUser).toEqual({
 			goal: "отменить заказ",
 			persona: "торопится",
+			knownFacts: expect.stringContaining("My order is 7."),
 			turns: 3,
 			stop: "stop-when",
 		});
+		expect(line!.meta.simulatedUser!.knownFacts).toContain("[REDACTED");
+		expect(JSON.stringify(line!.meta.simulatedUser)).not.toMatch(/private-simulator-key|RAW-WORLD-SENTINEL|internalNote/);
+		expect(JSON.stringify(line!.messages)).not.toContain("RAW-WORLD-SENTINEL");
+	});
+
+	it("bounds exported simulator known facts without falling back to raw world state", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_known_facts",
+			runs: ["known", "unknown"].map((id) => ({ runId: `run_${id}`, taskId: id, trace })),
+		});
+		const knownFacts = `Account 7. ${"x".repeat(MAX_DATASET_MESSAGE_CHARS)}`;
+		const world = { state: { internalNote: "RAW-WORLD-SENTINEL" } };
+		const lines = readLines(exportDataset({
+			runsRoot, evalRunId: "erun_known_facts",
+			tasks: tasksNamed({
+				known: { world, simulatedUser: { goal: "cancel order", knownFacts } },
+				unknown: { world, simulatedUser: { goal: "cancel order" } },
+			}),
+		}).path);
+		expect(lines[0]!.meta.simulatedUser!.knownFacts).toBe(knownFacts.slice(0, MAX_DATASET_MESSAGE_CHARS) + DATASET_TRUNCATION_MARKER);
+		expect(lines[1]!.meta.simulatedUser).toEqual({ goal: "cancel order" });
+		for (const line of lines) expect(JSON.stringify(line.meta.simulatedUser)).not.toContain("RAW-WORLD-SENTINEL");
 	});
 
 	it("fails closed when the published corpus facts no longer verify", () => {
@@ -1201,7 +1275,7 @@ describe("ahde export: the world a case happens in", () => {
 	});
 });
 
-describe("ahde export: graders, verdicts, and the agent kind", () => {
+describe("dataset export: graders, verdicts, and the agent kind", () => {
 	const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
 
 	it("carries every grader row run.json recorded, including an abstention the judge lane writes", () => {
@@ -1398,7 +1472,7 @@ describe("ahde export: graders, verdicts, and the agent kind", () => {
 	});
 });
 
-describe("ahde export: where the file lands", () => {
+describe("dataset export: where the file lands", () => {
 	/**
 	 * The dataset is compiled FROM evidence, so it must never be fed back into a
 	 * Target workspace snapshot: it would move the workspace hash every time an
@@ -1413,84 +1487,5 @@ describe("ahde export: where the file lands", () => {
 		// own directory happens to be called `exports` is not the host's file.
 		expect(isPrivateWorkspacePath("skills/exports/SKILL.md", evaluationFiles, null, [])).toBe(false);
 		expect(isPrivateWorkspacePath("AGENTS.md", evaluationFiles, null, [])).toBe(false);
-	});
-});
-
-describe("ahde export: invocation", () => {
-	it("parses the documented forms", () => {
-		expect(parseCliInvocation(["export", "--target", "./agent", "--all"])).toEqual({
-			kind: "command",
-			command: "export",
-			action: null,
-			flags: { target: "./agent", all: "true" },
-			positionals: [],
-		});
-		expect(parseCliInvocation([
-			"export", "--target", "./agent", "--project", "demo",
-			"--eval", "erun_1", "--out", "./out", "--min-score", "0.8",
-			"--include-failed", "--include-aa",
-		])).toEqual({
-			kind: "command",
-			command: "export",
-			action: null,
-			flags: {
-				target: "./agent",
-				project: "demo",
-				eval: "erun_1",
-				out: "./out",
-				"min-score": "0.8",
-				"include-failed": "true",
-				"include-aa": "true",
-			},
-			positionals: [],
-		});
-		expect(parseCliInvocation(["export", "--run", "run_1"])).toEqual({
-			kind: "command",
-			command: "export",
-			action: null,
-			flags: { run: "run_1" },
-			positionals: [],
-		});
-	});
-
-	/**
-	 * The bug this pins: a value-less `--all` at the end of the line is invisible
-	 * to a helper that reads the token AFTER a flag, and `--all --include-failed`
-	 * makes one boolean swallow the next. The parser already resolved both into
-	 * `"true"`, so the mapping consumes its map and never re-reads argv.
-	 */
-	it("maps the parser's own flags, boolean flags included", () => {
-		const trailing = commandFlags(["export", "--target", "./agent", "--all"]);
-		expect(datasetExportOptionsFromFlags(trailing, { runsRoot: "/runs" }))
-			.toEqual({ runsRoot: "/runs", all: true });
-
-		const adjacent = commandFlags([
-			"export", "--target", "./agent", "--all", "--include-failed", "--include-aa",
-		]);
-		expect(datasetExportOptionsFromFlags(adjacent, { runsRoot: "/runs" }))
-			.toEqual({ runsRoot: "/runs", all: true, includeFailed: true, includeAa: true });
-
-		const named = commandFlags(["export", "--target", "./agent", "--eval", "erun_1", "--min-score", "80%"]);
-		expect(datasetExportOptionsFromFlags(named, { runsRoot: "/runs" }))
-			.toEqual({ runsRoot: "/runs", evalRunId: "erun_1", minScore: 0.8 });
-
-		const one = commandFlags(["export", "--run", "run_1"]);
-		expect(datasetExportOptionsFromFlags(one, { runsRoot: "/runs", outRoot: "/agent" }))
-			.toEqual({ runsRoot: "/runs", outRoot: "/agent", runId: "run_1" });
-
-		// Every mapped form must survive the module's own selection check.
-		expect(() => exportDataset({ ...datasetExportOptionsFromFlags(trailing, { runsRoot: newRunsRoot() }) }))
-			.not.toThrow();
-	});
-
-	it.each([
-		[["export", "--target", "./agent"], /exactly one of --run <run-id>, --eval <erun-id>, or --all/],
-		[["export", "--target", "./agent", "--eval", "erun_1", "--all"], /exactly one of --run <run-id>, --eval <erun-id>, or --all/],
-		[["export", "--run", "run_1", "--eval", "erun_1"], /exactly one of --run <run-id>, --eval <erun-id>, or --all/],
-		[["export", "--all", "--min-score", "high"], /--min-score for export must be a pass rate/],
-		[["export", "--all", "--training"], /unknown flag --training for export/],
-	] as const)("refuses %j", (argv, message) => {
-		expect(() => parseCliInvocation(argv)).toThrow(CliInvocationError);
-		expect(() => parseCliInvocation(argv)).toThrow(message);
 	});
 });

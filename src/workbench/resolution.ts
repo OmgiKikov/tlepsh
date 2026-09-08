@@ -174,6 +174,9 @@ export function candidateSummary(
 			candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
 			comparison: evaluated.evaluation.development.comparison?.summary ?? null,
 			gate: gateProjection(evaluated.evaluation.development.comparison),
+			...(evaluated.evaluation.development.regressionGuards
+				? { regressionGuards: evaluated.evaluation.development.regressionGuards }
+				: {}),
 		}
 		: null;
 	const sealedHoldout = evaluated?.type === "evaluated"

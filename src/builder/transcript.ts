@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text, stripTerminalSequences, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { Text, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "../trace.js";
+import { diffRowGutter } from "./render/diff.js";
 import { headline } from "./render/format.js";
 import { MARKER_CLOSE, MARKER_CODES, MARKER_OPEN, stripMarkers } from "./render/markers.js";
 import { themePaint, type Paint } from "./render/paint.js";
@@ -122,6 +123,10 @@ function toneFor(paint: Paint, tone: TranscriptTone): (text: string) => string {
  */
 export function continuationPrefix(line: string): string {
 	const visible = stripTerminalSequences(stripMarkers(line));
+	// A rendered diff row carries a line-number gutter before its marker; the
+	// continuation keeps the gutter's width blank and the marker in its column.
+	const gutter = diffRowGutter(visible);
+	if (gutter) return `${gutter.prefix} ${gutter.marker} `;
 	const indent = /^[ ]*/.exec(visible)?.[0] ?? "";
 	const marker = visible.slice(indent.length, indent.length + 1);
 	return marker === "+" || marker === "-" ? `${indent}${marker}` : `${indent}  `;
@@ -129,10 +134,14 @@ export function continuationPrefix(line: string): string {
 
 /** One line wrapped to `width`, every continuation under its own marker column. */
 export function hangingWrap(line: string, width: number): string[] {
-	if (width <= 1 || visibleWidth(line) <= width) return [line];
-	const prefix = continuationPrefix(line);
+	if (width <= 0) return [""];
+	if (visibleWidth(line) <= width) return [line];
+	const fullPrefix = continuationPrefix(line);
+	// Keep room for content, including a two-cell grapheme, even under a huge indent.
+	const prefixWidth = Math.max(0, Math.min(Math.floor(width / 2), width - 2));
+	const prefix = prefixWidth === 0 ? "" : fullPrefix.slice(-prefixWidth);
 	const inner = wrapTextWithAnsi(line, Math.max(1, width - visibleWidth(prefix)));
-	return inner.map((wrapped, index) => (index === 0 ? wrapped : `${prefix}${wrapped}`));
+	return inner.map((wrapped, index) => truncateToWidth(index === 0 ? wrapped : `${prefix}${wrapped}`, width, "…"));
 }
 
 /**

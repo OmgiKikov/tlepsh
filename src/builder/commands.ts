@@ -501,9 +501,9 @@ export function resolveTraceTarget(
 		if (cursor === null || cursor === 0) return "end";
 		return at(cursor - 1);
 	}
-	if (/^\d{1,3}$/.test(argument)) {
+	if (/^\d+$/.test(argument)) {
 		const index = Number(argument) - 1;
-		if (index < 0 || index >= rows.length) throw new Error(t("cmd.err.trace-row", { argument, rows: pluralize(rows.length, "row") }));
+		if (!Number.isSafeInteger(Number(argument)) || index < 0 || index >= rows.length) throw new Error(t("cmd.err.trace-row", { argument, rows: pluralize(rows.length, "row") }));
 		return at(index);
 	}
 	const byId = rows.findIndex((row) => row.runId === argument || row.taskId === argument || `${row.taskId}#${row.repetitionIndex}` === argument);
@@ -523,6 +523,10 @@ export function registerAhdeBuilderCommands(
 	};
 	/** Where /trace next|prev stands, per evaluation; forgotten when the eval changes. */
 	let traceCursor: { evalRunId: string; index: number } | null = null;
+	let tracePage: { evalRunId: string; offset: number; limit: number } | null = null;
+	let reviewPage: { candidateId: string; offset: number } | null = null;
+	// The renderer shows 12 rows, even though the read projection can carry 60.
+	const reviewPageRows = 12;
 	const spendReader = options.spend ?? null;
 	/**
 	 * The host context of the command being handled. A background job outlives
@@ -560,17 +564,30 @@ export function registerAhdeBuilderCommands(
 		return true;
 	};
 
-	const showRunsTable = (ctx: ExtensionCommandContext, evalRunId: string, limit: number): void => {
+	const showRunsTable = (ctx: ExtensionCommandContext, evalRunId: string, argument: string): void => {
 		try {
 			const page = evidence.evalPage(workbench.runsRoot, evalRunId);
+			const paging = argument === "next" || argument === "prev";
+			const current = tracePage?.evalRunId === evalRunId ? tracePage : null;
+			const limit = paging ? current?.limit ?? DEFAULT_TRACE_TABLE_ROWS
+				: Math.max(1, Math.min(argument ? Number(argument) : DEFAULT_TRACE_TABLE_ROWS, MAX_TRACE_TABLE_ROWS));
+			// A new selection starts at row 1; no cursor yet means the default panel's first page.
+			const offset = paging && (!tracePage || current)
+				? (current?.offset ?? 0) + (argument === "next" ? limit : -limit) : 0;
+			if (paging && (offset < 0 || offset >= page.rows.length)) {
+				ctx.ui.notify(t("trace.noMore"), "info");
+				return;
+			}
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.runs") }),
 				tone: "info",
-				lines: renderRunsTable(page.rows, page.modes, markerPaint, { limit: Math.min(limit, MAX_TRACE_TABLE_ROWS) }),
+				lines: renderRunsTable(page.rows, page.modes, markerPaint, { limit, offset }),
 			});
-		} catch {
-			// The table is a convenience over the same evidence the link opens; when
-			// the runs cannot be read here, the diagnosis and its link stand alone.
+			tracePage = { evalRunId, offset, limit };
+		} catch (error) {
+			if (argument === "next" || argument === "prev") {
+				ctx.ui.notify(t("trace.notListed", { eval: evalRunId, reason: describeError(error) }), "warning");
+			}
 		}
 	};
 
@@ -656,7 +673,7 @@ export function registerAhdeBuilderCommands(
 		result: WorkbenchDecisionResult,
 		options: { liveTraceUrl?: string | null; note?: boolean } = {},
 	): Promise<string> => {
-		const { block, headline } = await builderDecisionPresentation(result, { workbench, source: command, liveTraceUrl: options.liveTraceUrl, spend: spendReader });
+		const { block, headline } = await builderDecisionPresentation(result, { workbench, source: command, liveTraceUrl: options.liveTraceUrl, spend: spendReader, evalPage: evidence.evalPage });
 		presenter.show(ctx, block);
 		if (options.note !== false) {
 			presenter.note(
@@ -823,12 +840,15 @@ export function registerAhdeBuilderCommands(
 	const rejectCurrent = async (ctx: ExtensionCommandContext, signal: AbortSignal | undefined, reason: string): Promise<void> => {
 		if (refuseWhileBusy(ctx)) return;
 		let view = await workbench.view();
-		if (view.stage !== "candidate-review" && view.stage !== "release-decision") {
+		// A checked change is rejected where its check is read; the decision
+		// records the review itself there.
+		const checked = view.stage === "candidate-verification" && view.checkedChange !== undefined;
+		if (view.stage !== "candidate-review" && view.stage !== "release-decision" && !checked) {
 			throw new Error(t("error.not-available", { command: "reject", stage: stageLabel(view.stage), next: nextStep(view) }));
 		}
 		const humanGate = intentGate(ctx, {
 			title: t("intent.reject.title"),
-			summary: t(view.stage === "candidate-review" ? "intent.reject.with-review" : "intent.reject.only"),
+			summary: t(view.stage === "release-decision" ? "intent.reject.only" : "intent.reject.with-review"),
 			followUp: "reject-candidate",
 		});
 		if (view.stage === "candidate-review") {
@@ -889,6 +909,14 @@ export function registerAhdeBuilderCommands(
 				if (detail?.kind === "interrupted-candidate") {
 					const abandon = await confirmChoice(ctx, t("panel.interrupted-candidate"), "review.abandon-attempt", "review.just-looking", { signal });
 					if (abandon) await discardCurrent(ctx, signal, reason);
+				} else if (view.checkedChange) {
+					// Checked on the basket: the exam and the release are one “ship”.
+					const choice = await offer(t("candidate.title"), [
+						{ id: "ship", label: () => t("review.ship") },
+						{ id: "reject", label: () => t("review.reject") },
+					]);
+					if (choice === "ship") await shipCurrent(ctx, signal, null, reason);
+					else if (choice === "reject") await rejectCurrent(ctx, signal, reason);
 				} else {
 					const verify = await confirmChoice(ctx, t("panel.applied-proposal"), "review.verify-now", "review.just-looking", { signal });
 					if (verify) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason }, signal);
@@ -933,10 +961,12 @@ export function registerAhdeBuilderCommands(
 		if (refuseWhileBusy(ctx)) return;
 		const view = await workbench.view();
 		const shippable = ["candidate-review", "release-decision", "candidate-adoption", "complete"];
-		if (!shippable.includes(view.stage)) {
+		// A checked change ships from its check: the exam runs first, then the release.
+		const checked = view.stage === "candidate-verification" && view.checkedChange !== undefined;
+		if (!shippable.includes(view.stage) && !checked) {
 			throw new Error(t("cmd.err.ship-stage", { stage: stageLabel(view.stage), next: nextStep(view) }));
 		}
-		const needsVersion = view.stage === "candidate-review" || view.stage === "release-decision";
+		const needsVersion = checked || view.stage === "candidate-review" || view.stage === "release-decision";
 		const chosen = version ?? (needsVersion ? await askVersion(ctx) : null);
 		if (needsVersion && !chosen) return;
 		await runObserved(ctx, "ship", {
@@ -1225,12 +1255,14 @@ export function registerAhdeBuilderCommands(
 		description: t("cmd.traces"),
 		async handler(args, ctx) {
 			const rowsWanted = args.trim();
-			if (rowsWanted && !/^\d{1,2}$/.test(rowsWanted)) throw new Error(t("cmd.err.traces-rows"));
+			const paging = rowsWanted === "next" || rowsWanted === "prev";
+			if (rowsWanted && !paging && (!/^\d+$/.test(rowsWanted) || !Number.isSafeInteger(Number(rowsWanted)))) throw new Error(t("cmd.err.traces-rows"));
 			const signal = await prepare(ctx, "traces");
 			const content = await tracesDetail(ctx);
 			if (!content) return;
-			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(content, markerPaint) });
-			showRunsTable(ctx, content.evaluation.evalRunId, rowsWanted ? Number(rowsWanted) : DEFAULT_TRACE_TABLE_ROWS);
+			if (!paging) presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(content, markerPaint) });
+			showRunsTable(ctx, content.evaluation.evalRunId, rowsWanted);
+			if (paging) return;
 			const modes = content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
 				const titleOf = (mode: (typeof modes)[number]): string => oneLine(failureModeReading(mode).title, 60);
@@ -1257,14 +1289,33 @@ export function registerAhdeBuilderCommands(
 	registerCommand("review", {
 		description: t("cmd.review"),
 		async handler(args, ctx) {
-			noArguments("review", args);
+			const direction = args.trim();
+			if (direction && direction !== "next" && direction !== "prev") throw new Error(t("cmd.err.review-page"));
 			const signal = await prepare(ctx, "review");
-			const view = await workbench.view({ aspect: "review" });
+			let view = await workbench.view({ aspect: "review" });
+			const detail = view.detail?.aspect === "review" ? view.detail.content : undefined;
+			if (direction) {
+				if (detail?.kind !== "candidate" || !detail.cases?.length) {
+					reviewPage = null;
+					ctx.ui.notify(t("cmd.review-no-cases"), "info");
+					return;
+				}
+				const current = reviewPage?.candidateId === detail.candidateId ? reviewPage : null;
+				const offset = !reviewPage || current
+					? (current?.offset ?? 0) + (direction === "next" ? reviewPageRows : -reviewPageRows) : 0;
+				if (offset < 0 || offset >= (detail.casesTotal ?? detail.cases.length)) {
+					ctx.ui.notify(t("cmd.review-no-more"), "info");
+					return;
+				}
+				if (offset > 0) view = await workbench.view({ aspect: "review", casesOffset: offset });
+			}
+			const shown = view.detail?.aspect === "review" ? view.detail.content : undefined;
+			reviewPage = shown?.kind === "candidate" ? { candidateId: shown.candidateId, offset: shown.casesOffset ?? 0 } : null;
 			const lines = view.detail?.aspect === "review"
 				? renderReview(view.detail.content, markerPaint)
 				: renderStatus(view, markerPaint, { heading: false });
 			presenter.show(ctx, { title: viewTitle(view), tone: view.blockers.length > 0 ? "warning" : "info", lines });
-			await offerReviewActions(ctx, view, signal);
+			if (!direction) await offerReviewActions(ctx, view, signal);
 		},
 	});
 
@@ -1437,15 +1488,15 @@ export function registerAhdeBuilderCommands(
 	 * had, written beside the agent as one JSONL file the operator can hand on.
 	 *
 	 * A read of durable evidence — nothing runs, spends, or decides — through
-	 * the same application function `ahde export` uses, so the boundary is the
+	 * the one application function that exports a dataset, so the boundary is the
 	 * same boundary: the sealed exam is refused on the bounded index before a
 	 * single trace is opened, and the one line says so.
 	 *
 	 * It is `/dataset` and not `/export` because Pi owns `/export` — its own
 	 * built-in writes the session out — and a built-in name never reaches an
 	 * extension: session 7 met `Warning: /export is disabled by this host.` and
-	 * the operator had no way to read the dataset at all. The CLI verb stays
-	 * `ahde export`; only the slash command moved.
+	 * the operator had no way to read the dataset at all. Only the slash
+	 * command moved.
 	 */
 	registerCommand("dataset", {
 		description: t("cmd.dataset"),
@@ -1551,4 +1602,3 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 }
-

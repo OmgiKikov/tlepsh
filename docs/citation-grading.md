@@ -45,7 +45,7 @@ These views return an explicit historical-evaluator marker and an inconclusive
 current gate; they cannot enter a current candidate/release gate or be reused as a fresh
 baseline. Startup observations require the current evaluator too.
 
-`ahde regrade` creates separate v5 records from saved traces/workspaces and
+A re-score (`regrade` in the conversation) creates separate v5 records from saved traces/workspaces and
 preserves the originals. Deterministic citation regrading makes no model calls;
 a suite containing model judges can still call those judges. Regrade both arms
 for retrospective comparison. Regraded records are not fresh baseline runs;
